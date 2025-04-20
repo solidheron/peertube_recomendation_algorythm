@@ -1,9 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "PeerTube Watch Tracker",
+  "name": "PeerTube Extension Suite",
   "version": "1.0",
-  "description": "Tracks how much of a PeerTube video you watch, records continuous watch segments and gaps, and automatically exports the data to a JSON file.",
-  "permissions": ["storage", "downloads"],
+  "description": "Combines PeerTube metadata extraction and watch tracking functionalities.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "alarms"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -14,10 +18,20 @@
         "*://*/videos/watch/*",
         "*://*/v/*"
       ],
-      "js": ["content.js"]
+      "js": [
+        "content.js"
+      ]
     }
   ],
+  "web_accessible_resources": [{
+	  "resources": [
+		"processedUUIDs.json",
+		"videoUUIDs.json",
+		"metadataList.json"
+	  ],
+	  "matches": ["<all_urls>"]
+	}],
   "action": {
-    "default_title": "PeerTube Watch Tracker"
+    "default_title": "PeerTube Extension Suite"
   }
 }
