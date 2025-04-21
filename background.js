@@ -1,13 +1,11 @@
 "use strict";
 
 // --- Metadata Extraction ---
-
-const instanceUrl = 'https://tube.transgirl.fr/';
+const instanceUrl = 'https://dalek.zone/'; // Corrected instance URL!
 const count = 10;
 const maxPages = 1;
 
 // --- Tokenizer and Processing Functions ---
-
 function stripLinks(text) {
     return text.replace(/https?:\/\/\S+|www\.\S+/g, "");
 }
@@ -19,15 +17,16 @@ function tokenize(text) {
         .split(/\s+/)
         .filter(word => word.length > 1);
 }
+
 // Function to download metadataList
 function downloadMetadataList() {
     chrome.storage.local.get(['metadataList'], (result) => {
         const metadataList = result.metadataList || [];
-        const jsonString = JSON.stringify(metadataList, null, 2);  // Convert to JSON with indentation
-
-        const blob = new Blob([jsonString], { type: 'application/json' });
+        const jsonString = JSON.stringify(metadataList, null, 2); // Convert to JSON with indentation
+        const blob = new Blob([jsonString], {
+            type: 'application/json'
+        });
         const url = URL.createObjectURL(blob);
-
         chrome.downloads.download({
             url: url,
             filename: 'metadataList.json', // Suggested filename
@@ -45,18 +44,20 @@ function downloadMetadataList() {
 
 // Listen for a message to trigger the download
 chrome.runtime.onMessage.addListener(
-    function(request, sender, sendResponse) {
+    function (request, sender, sendResponse) {
         if (request.action === "downloadMetadata") {
             downloadMetadataList();
         }
     }
 );
+
 function processMetadataList(metadataList) {
     return metadataList.map(video => {
         let tokens = [];
         if (video.name) {
             tokens.push(...tokenize(video.name));
         }
+
         if (Array.isArray(video.tags)) {
             video.tags.forEach(tag => {
                 if (tag && tag.name) {
@@ -64,13 +65,13 @@ function processMetadataList(metadataList) {
                 }
             });
         }
+
         if (video.description) {
             const cleanDesc = stripLinks(video.description);
             tokens.push(...tokenize(cleanDesc));
         }
 
         tokens = [...new Set(tokens)];
-
         // Assign tokens to Video_description_vector as a sub-element
         video.Video_description_vector = {
             recommended_standard: {
@@ -80,8 +81,6 @@ function processMetadataList(metadataList) {
         return video;
     });
 }
-
-
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -111,12 +110,14 @@ async function fetchVideoUUIDs() {
                         const errorText = await response.text();
                         throw new Error(`Failed to fetch videos: ${response.statusText}\n${errorText}`);
                     }
+
                     const data = await response.json();
                     const uuids = Array.isArray(data.data) ? data.data.map(v => v.uuid) : [];
                     if (uuids.length === 0) {
                         console.log(`ℹ️ No more videos at start=${startVal} for this template.`);
                         break;
                     }
+
                     uuids.forEach(uuid => allUUIDs.add(uuid));
                     console.log(`✅ Retrieved ${uuids.length} UUIDs from: ${pagedUrl}`);
                 } catch (err) {
@@ -132,6 +133,7 @@ async function fetchVideoUUIDs() {
                     const errorText = await response.text();
                     throw new Error(`Failed to fetch videos: ${response.statusText}\n${errorText}`);
                 }
+
                 const data = await response.json();
                 const uuids = Array.isArray(data.data) ? data.data.map(v => v.uuid) : [];
                 uuids.forEach(uuid => allUUIDs.add(uuid));
@@ -174,8 +176,21 @@ async function fetchMetadata(uuids, processed, metadataList) {
         const videoApiUrl = `${instanceUrl.replace(/\/$/, '')}/api/v1/videos/${uuid}`;
         try {
             const response = await fetch(videoApiUrl);
-            if (!response.ok) throw new Error(`Failed to fetch metadata for ${uuid}: ${response.statusText}`);
+            if (!response.ok) {
+                if (response.status === 404) {
+                    console.warn(`Video ${uuid} not found on instance. Skipping.`);
+                    processed.add(uuid); // Mark as processed to avoid retrying
+                    continue; // Skip to the next UUID
+                } else {
+                    throw new Error(`Failed to fetch metadata for ${uuid}: ${response.statusText}`);
+                }
+            }
             const metadata = await response.json();
+            const shortUUID = metadata.shortUUID; // Extract shortUUID
+
+            // Add the shortUUID to the metadata object
+            metadata.shortUUID = shortUUID;
+
             metadataList.push(metadata);
             processed.add(uuid);
             chrome.storage.local.set({
@@ -189,7 +204,6 @@ async function fetchMetadata(uuids, processed, metadataList) {
             await sleep(500);
         }
     }
-
     const processedMetadataList = processMetadataList(metadataList);
     chrome.storage.local.set({
         metadataList: processedMetadataList
@@ -199,7 +213,6 @@ async function fetchMetadata(uuids, processed, metadataList) {
 }
 
 // --- Watch Tracking ---
-
 let watchSegments = [];
 let currentSegmentStart = null;
 
@@ -222,19 +235,18 @@ function stopTracking() {
 }
 
 // --- Data Export ---
-
 function saveDataToJsonFile(data, filename = 'data.json') {
     const jsonString = JSON.stringify(data, null, 2);
     const blob = new Blob([jsonString], {
         type: 'application/json'
     });
     const reader = new FileReader();
-    reader.onload = function(event) {
+    reader.onload = function (event) {
         chrome.downloads.download({
             url: event.target.result,
             filename: filename,
             saveAs: true
-        }, function(downloadId) {
+        }, function (downloadId) {
             if (downloadId === undefined) {
                 console.error("Download failed:", chrome.runtime.lastError);
             } else {
@@ -263,6 +275,7 @@ function clearMetadataAndUUIDs() {
         console.log('🔥 metadataList, processedUUIDs, and videoUUIDs have been cleared from storage.');
     });
 }
+
 function loadProcessedUUIDsToStorage(data) {
     chrome.storage.local.set({
         processedUUIDs: data
@@ -270,8 +283,8 @@ function loadProcessedUUIDsToStorage(data) {
         console.log('processedUUIDs loaded successfully into storage.');
     });
 }
-// --- Message Listener (from content script and popup) ---
 
+// --- Message Listener (from content script and popup) ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "startTracking") {
         startTracking();
@@ -352,7 +365,6 @@ function mergeMetadataList(newData) {
 
             // Check if this item already exists to avoid duplicates
             const existingIndex = mergedMetadataList.findIndex(item => item.uuid === extractedItem.uuid);
-
             if (existingIndex === -1) {
                 mergedMetadataList.push(extractedItem);
             } else {
@@ -361,7 +373,7 @@ function mergeMetadataList(newData) {
             }
         });
 
-        // No size limit.  Get all entries.
+        // No size limit. Get all entries.
         chrome.storage.local.set({
             metadataList: mergedMetadataList
         }, () => {
@@ -370,10 +382,7 @@ function mergeMetadataList(newData) {
     });
 }
 
-
-
 // --- Event Listeners ---
-
 chrome.runtime.onInstalled.addListener(() => {
     console.log("Extension installed/updated");
     fetchVideoUUIDs();
@@ -383,18 +392,20 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.alarms.create('metadataFetcher', {
     periodInMinutes: 60
 });
+
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'metadataFetcher') {
         console.log("Running periodic metadata fetch");
         fetchVideoUUIDs();
     }
 });
-    function checkStorageUsage() {
-        chrome.storage.local.getBytesInUse(null, (bytes) => {
-            const megabytes = bytes / (1024 * 1024);
-            console.log(`Storage usage: ${megabytes.toFixed(2)} MB`);
-        });
-    }
-    // Call this function periodically (e.g., every hour)
-    setInterval(checkStorageUsage, 3600000);
 
+function checkStorageUsage() {
+    chrome.storage.local.getBytesInUse(null, (bytes) => {
+        const megabytes = bytes / (1024 * 1024);
+        console.log(`Storage usage: ${megabytes.toFixed(2)} MB`);
+    });
+}
+
+// Call this function periodically (e.g., every hour)
+setInterval(checkStorageUsage, 3600000);

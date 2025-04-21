@@ -1,37 +1,36 @@
 {
-  "manifest_version": 3,
-  "name": "PeerTube Extension Suite",
-  "version": "1.0",
-  "description": "Combines PeerTube metadata extraction and watch tracking functionalities.",
-  "permissions": [
-    "storage",
-    "downloads",
-    "alarms"
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
+    "manifest_version": 3,
+    "name": "PeerTube Extension Suite",
+    "version": "1.0",
+    "description": "Combines PeerTube metadata extraction and watch tracking functionalities.",
+    "permissions": [
+        "storage",
+        "downloads",
+        "alarms"
+    ],
+    "host_permissions": [
+        "https://dalek.zone/*"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [{
+        "matches": [
+            "*://*/w/*",
+            "*://*/videos/watch/*",
+            "*://*/v/*"
+        ],
+        "js": [
+            "content.js"
+        ]
+    }],
+ "web_accessible_resources": [
     {
-      "matches": [
-        "*://*/w/*",
-        "*://*/videos/watch/*",
-        "*://*/v/*"
-      ],
-      "js": [
-        "content.js"
-      ]
+      "resources": ["processedUUIDs.json", "videoUUIDs.json", "metadataList.json"],
+      "matches": ["<all_urls>"]
     }
   ],
-  "web_accessible_resources": [{
-	  "resources": [
-		"processedUUIDs.json",
-		"videoUUIDs.json",
-		"metadataList.json"
-	  ],
-	  "matches": ["<all_urls>"]
-	}],
-  "action": {
-    "default_title": "PeerTube Extension Suite"
-  }
+    "action": {
+        "default_title": "PeerTube Extension Suite"
+    }
 }

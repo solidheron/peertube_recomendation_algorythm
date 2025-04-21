@@ -8,7 +8,7 @@ let lastSaveTime = 0;
 const interval = 1; // interval in seconds
 
 // Initialize variables
-let currentURL = window.location.href;  // Initialize currentURL
+let currentURL = window.location.href; // Initialize currentURL
 let data = null; // Initialize data as null
 let prev = []; // Initialize as empty array
 
@@ -20,7 +20,7 @@ function initializeData() {
         currentTime: 0,
         duration: 0,
         percentWatched: 0,
-        watchedLiveSeconds: 0,  // For live streams - in seconds
+        watchedLiveSeconds: 0, // For live streams - in seconds
         isLive: false,
         liked: false,
         disliked: false,
@@ -33,6 +33,248 @@ function initializeData() {
     };
 }
 
+// Improved function to extract shortUUID from URL
+function extractShortUUIDFromURL(url) {
+    // This regex captures the shortUUID from various URL patterns
+    const regex = /(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/;
+    const match = url.match(regex);
+    return match ? match[1] : null;
+}
+
+// Function to tokenize and process a single video
+// Add these functions to content.js - they're the same as in background.js
+function stripLinks(text) {
+    return text.replace(/https?:\/\/\S+|www\.\S+/g, "");
+}
+
+function tokenize(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^\w\s]/g, "")
+        .split(/\s+/)
+        .filter(word => word.length > 1);
+}
+
+// Improved function to extract shortUUID from URL
+function extractShortUUIDFromURL(url) {
+    // This regex captures the shortUUID from various URL patterns
+    const regex = /(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/;
+    const match = url.match(regex);
+    return match ? match[1] : null;
+}
+
+// Function to tokenize and process a single video
+function processVideoMetadata(video) {
+    let tokens = [];
+    if (video.name) {
+        tokens.push(...tokenize(video.name));
+    }
+
+    if (Array.isArray(video.tags)) {
+        video.tags.forEach(tag => {
+            if (tag && tag.name) {
+                tokens.push(tag.name.toLowerCase());
+            }
+        });
+    }
+
+    if (video.description) {
+        const cleanDesc = stripLinks(video.description);
+        tokens.push(...tokenize(cleanDesc));
+    }
+
+    tokens = [...new Set(tokens)];
+    // Assign tokens to Video_description_vector as a sub-element
+    video.Video_description_vector = {
+        recommended_standard: {
+            "tokens": tokens
+        }
+    };
+    return video;
+}
+
+// Enhanced function to fetch video info and update metadataList
+function fetchVideoInfoAndUpdateMetadata(shortUUID) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.get(['instanceUrl', 'metadataList'], (result) => {
+            const instanceUrl = result.instanceUrl || 'https://dalek.zone/';
+            const metadataList = result.metadataList || [];
+            const videoApiUrl = `${instanceUrl.replace(/\/$/, '')}/api/v1/videos/${shortUUID}`;
+
+            fetch(videoApiUrl)
+                .then(response => {
+                    if (!response.ok) {
+                        if (response.status === 404) {
+                            console.warn(`Video ${shortUUID} not found on instance. Returning null.`);
+                            resolve(null);  // Resolve with null for 404
+                        } else {
+                            reject(new Error(`Failed to fetch video info for ${shortUUID}: ${response.statusText}`));
+                        }
+                    }
+                    return response.json();
+                })
+                .then(videoData => {
+                    if (!videoData) {
+                        resolve(null);
+                        return;
+                    }
+                    
+                    // Add shortUUID to the video data
+                    videoData.shortUUID = shortUUID;
+                    
+                    // Process the video metadata to extract tokens
+                    const processedVideo = processVideoMetadata(videoData);
+                    
+                    // Check if this video already exists in metadataList
+                    const existingIndex = metadataList.findIndex(item => 
+                        item.uuid === processedVideo.uuid || item.shortUUID === shortUUID);
+                    
+                    // Update or add to metadataList
+                    if (existingIndex !== -1) {
+                        metadataList[existingIndex] = processedVideo;
+                    } else {
+                        metadataList.push(processedVideo);
+                    }
+                    
+                    // Save the updated metadataList
+                    chrome.storage.local.set({ metadataList: metadataList }, () => {
+                        console.log(`✅ Added/updated video ${shortUUID} in metadataList`);
+                        resolve(processedVideo);
+                    });
+                })
+                .catch(error => {
+                    console.error(`Error fetching video info for ${shortUUID}:`, error);
+                    reject(error);
+                });
+        });
+    });
+}
+
+// Updated createUserRecommendationVector function
+function createUserRecommendationVector(peertubeWatchHistory) {
+    const shortUUIDs = [];
+
+    for (const entry of peertubeWatchHistory) {
+        if (!entry.isLive && entry.url) {
+            const shortUUID = extractShortUUIDFromURL(entry.url);
+            if (shortUUID) {
+                shortUUIDs.push(shortUUID);
+            }
+        }
+    }
+
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['metadataList'], (result) => {
+            const metadataList = result.metadataList || [];
+            const enhancedVector = [];
+            const totalTokens = {};
+            const missingUUIDs = [];
+
+            shortUUIDs.forEach(shortUUID => {
+                const found = metadataList.some(item => item.shortUUID === shortUUID);
+                if (!found) {
+                    missingUUIDs.push(shortUUID);
+                }
+            });
+
+            const processVector = (list) => {
+                shortUUIDs.forEach(shortUUID => {
+                    const metadata = list.find(item => item.shortUUID === shortUUID);
+                    const watchEntry = peertubeWatchHistory.find(entry => extractShortUUIDFromURL(entry.url) === shortUUID);
+                    const overlapWatchTime = watchEntry?.overlap_watchtime || 0;
+
+                    const vector = {};
+                    if (metadata?.Video_description_vector?.recommended_standard?.tokens) {
+                        metadata.Video_description_vector.recommended_standard.tokens.forEach(token => {
+                            vector[token] = overlapWatchTime;
+
+                            // Accumulate into total
+                            if (totalTokens[token]) {
+                                totalTokens[token] += overlapWatchTime;
+                            } else {
+                                totalTokens[token] = overlapWatchTime;
+                            }
+                        });
+                    }
+
+                    enhancedVector.push({
+                        shortUUID: shortUUID,
+                        tokens: vector
+                    });
+                });
+
+                // Append the total vector
+                enhancedVector.push({
+                    total: totalTokens
+                });
+
+                resolve(enhancedVector);
+            };
+
+            if (missingUUIDs.length === 0) {
+                processVector(metadataList);
+            } else {
+                console.log(`Fetching data for ${missingUUIDs.length} missing videos`);
+                Promise.all(missingUUIDs.map(shortUUID =>
+                    fetchVideoInfoAndUpdateMetadata(shortUUID).catch(() => null)
+                )).then(() => {
+                    chrome.storage.local.get(['metadataList'], (updated) => {
+                        processVector(updated.metadataList || []);
+                    });
+                });
+            }
+        });
+    });
+}
+
+
+// Function to fetch video info by shortUUID
+function fetchVideoInfoByShortUUID(shortUUID) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.get(['instanceUrl'], (result) => {
+            const instanceUrl = result.instanceUrl || 'https://dalek.zone/';
+            const videoApiUrl = `${instanceUrl.replace(/\/$/, '')}/api/v1/videos/${shortUUID}`;
+
+            fetch(videoApiUrl)
+                .then(response => {
+                    if (!response.ok) {
+                        if (response.status === 404) {
+                            console.warn(`Video ${shortUUID} not found on instance. Returning null.`);
+                            resolve(null);  // Resolve with null for 404
+                        } else {
+                            reject(new Error(`Failed to fetch video info for ${shortUUID}: ${response.statusText}`));
+                        }
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    resolve(data);
+                })
+                .catch(error => {
+                    console.error(`Error fetching video info for ${shortUUID}:`, error);
+                    reject(error);
+                });
+        });
+    });
+}
+
+// Function to store enhanced user recommendation vector
+function storeUserRecommendationVector() {
+    chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
+        const peertubeWatchHistory = result.peertubeWatchHistory ? JSON.parse(result.peertubeWatchHistory) : [];
+
+        // Use the promise-based approach to get the enhanced vector
+        createUserRecommendationVector(peertubeWatchHistory)
+            .then(enhancedVector => {
+                chrome.storage.local.set({
+                    userRecommendationVector: JSON.stringify(enhancedVector)
+                }, () => {
+                    console.log('Enhanced user recommendation vector stored in extension data:', enhancedVector);
+                });
+            });
+    });
+}
+
 // Function to load watch history and initialize data for current video
 function loadWatchHistory(callback) {
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -42,7 +284,6 @@ function loadWatchHistory(callback) {
                 if (!Array.isArray(prev)) {
                     prev = []; // Ensure it's an array
                 }
-
                 console.log('Watch history loaded from storage:', prev);
 
                 // Find existing data for current URL
@@ -72,15 +313,13 @@ function loadWatchHistory(callback) {
 
         // Call the main function after loading the watch history.
         main();
-
         callback(); // Call the callback function after loading
+        storeUserRecommendationVector(); //Call storeUserRecommendationVector after loading watch history.
     });
 }
 
-
 // --- URL CHANGE DETECTION ---
 let lastURL = window.location.href;
-
 setInterval(() => {
     if (window.location.href !== lastURL) {
         console.log("URL changed from", lastURL, "to", window.location.href);
@@ -89,13 +328,13 @@ setInterval(() => {
 
         // Re-initialize data for the new URL
         data = initializeData();
-        
+
         // Add the new data to the prev array if it doesn't exist
         const existingIndex = prev.findIndex(item => item.url === currentURL);
         if (existingIndex === -1) {
             prev.push(data);
         }
-        
+
         loadWatchHistory(() => {
             console.log("Watch history loaded/reloaded after URL change.");
         });
@@ -115,13 +354,16 @@ let previousCurrentTime = 0;
 // Variable to track if the video is playing
 let isVideoPlaying = false;
 
+
 // Performance monitoring variables
 let executionTimes = [];
 
+
 // Function to fetch PeerTube video info synchronously using its API
 function fetchVideoInfoSync(videoUrl) {
-    try {
-        const videoIdMatch = videoUrl.match(/(?:\/videos\/watch\/|\/w\/)([a-zA-Z0-9\-_]+)/);
+  try {
+    const videoIdMatch = videoUrl.mat
+        //const videoIdMatch = videoUrl.match(/(?:\/videos\/watch\/|\/w\/)([a-zA-Z0-9\-_]+)/);
         if (!videoIdMatch) {
             console.warn("❌ Could not extract video ID from URL:", videoUrl);
             return null;
@@ -334,11 +576,43 @@ function saveWatchData(isFinalSave = false) {
     const liked = likeButton ? likeButton.classList.contains("activated") : null;
     const disliked = dislikeButton ? dislikeButton.classList.contains("activated") : null;
     let totalSegDuration = 0;
-    if (data.session?.segments) {
-        data.session.segments.forEach(segment => {
-            totalSegDuration += segment.seg_duration || 0;
-        });
-    }
+	if (data.session?.segments) {
+		data.session.segments.forEach(segment => {
+			totalSegDuration += segment.seg_duration || 0;
+		});
+	}
+
+	// 🔁 Compute overlap_watchtime
+	function mergeSegments(segments) {
+		if (!segments || segments.length === 0) return [];
+
+		const sorted = segments
+			.slice()
+			.sort((a, b) => a.start - b.start);
+
+		const merged = [sorted[0]];
+
+		for (let i = 1; i < sorted.length; i++) {
+			const last = merged[merged.length - 1];
+			const current = sorted[i];
+
+			if (current.start <= last.end + 0.1) { // Slight fuzziness to catch near overlaps
+				last.end = Math.max(last.end, current.end);
+			} else {
+				merged.push({ ...current });
+			}
+		}
+
+		return merged;
+	}
+
+	const mergedSegments = mergeSegments(data.session?.segments);
+	const overlapWatchTime = mergedSegments.reduce((sum, s) => sum + (s.end - s.start), 0);
+
+	// Save new fields
+	data.totalSegDuration = parseFloat(totalSegDuration.toFixed(2));
+	data.overlap_watchtime = parseFloat(overlapWatchTime.toFixed(2));
+
 
     data.title = document.title;
     data.url = window.location.href;
