@@ -1,7 +1,3 @@
-Sure! Here's a cleaner and more professional version of your README text for GitHub:
-
----
-
 **This is a browser extension for Chrome-based browsers like Brave.**
 
 ### Installation Instructions
@@ -13,6 +9,3 @@ Sure! Here's a cleaner and more professional version of your README text for Git
 
 The extension should now be installed and active.
 
----
-
-Let me know if you want to add usage instructions, permissions info, or a screenshot!
