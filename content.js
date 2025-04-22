@@ -12,15 +12,15 @@ let currentURL = window.location.href; // Initialize currentURL
 let data = null; // Initialize data as null
 let prev = []; // Initialize as empty array
 
-// Function to initialize or reset data
-function initializeData() {
+// Function to initialize or reset data - updated to accept current timestamp
+function initializeData(currentVideoTime = 0) {
     return {
         title: document.title,
         url: currentURL,
-        currentTime: 0,
+        currentTime: currentVideoTime,
         duration: 0,
         percentWatched: 0,
-        watchedLiveSeconds: 0, // For live streams - in seconds
+        watchedLiveSeconds: 0,
         isLive: false,
         liked: false,
         disliked: false,
@@ -28,7 +28,7 @@ function initializeData() {
         session: {
             segments: []
         },
-        sessionStart: null,
+        sessionStart: currentVideoTime, // Initialize with current video time
         finished: false
     };
 }
@@ -53,14 +53,6 @@ function tokenize(text) {
         .replace(/[^\w\s]/g, "")
         .split(/\s+/)
         .filter(word => word.length > 1);
-}
-
-// Improved function to extract shortUUID from URL
-function extractShortUUIDFromURL(url) {
-    // This regex captures the shortUUID from various URL patterns
-    const regex = /(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/;
-    const match = url.match(regex);
-    return match ? match[1] : null;
 }
 
 // Function to tokenize and process a single video
@@ -149,6 +141,24 @@ function fetchVideoInfoAndUpdateMetadata(shortUUID) {
         });
     });
 }
+function cosineSimilarity(userVec, videoVec) {
+    let dot = 0, userMag = 0, videoMag = 0;
+
+    for (const token in userVec) {
+        const userVal = userVec[token];
+        const videoVal = videoVec[token] || 0;
+        dot += userVal * videoVal;
+        userMag += userVal * userVal;
+    }
+
+    const videoLen = Object.keys(videoVec).length;
+    videoMag = Math.sqrt(videoLen); // since all token weights = 1
+
+    userMag = Math.sqrt(userMag);
+    if (userMag === 0 || videoMag === 0) return 0;
+
+    return dot / (userMag * videoMag);
+}
 
 // Updated createUserRecommendationVector function
 function createUserRecommendationVector(peertubeWatchHistory) {
@@ -203,11 +213,22 @@ function createUserRecommendationVector(peertubeWatchHistory) {
                     });
                 });
 
-                // Append the total vector
-                enhancedVector.push({
-                    total: totalTokens
-                });
+                // Calculate vector magnitude of the total
+				let magnitude = 0;
+				for (const token in totalTokens) {
+					magnitude += Math.pow(totalTokens[token], 2);
+				}
+				magnitude = Math.sqrt(magnitude);
 
+				// Append total and magnitude to the vector
+				enhancedVector.push({
+					total: totalTokens
+				});
+				enhancedVector.push({
+					vector_magnitude: parseFloat(magnitude.toFixed(4))
+				});
+
+				
                 resolve(enhancedVector);
             };
 
@@ -263,18 +284,54 @@ function storeUserRecommendationVector() {
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
         const peertubeWatchHistory = result.peertubeWatchHistory ? JSON.parse(result.peertubeWatchHistory) : [];
 
-        // Use the promise-based approach to get the enhanced vector
         createUserRecommendationVector(peertubeWatchHistory)
             .then(enhancedVector => {
                 chrome.storage.local.set({
                     userRecommendationVector: JSON.stringify(enhancedVector)
                 }, () => {
-                    console.log('Enhanced user recommendation vector stored in extension data:', enhancedVector);
+                    console.log('✅ userRecommendationVector stored.');
+                    computeAndStoreCosineSimilarity(); // Call your new similarity function here
                 });
             });
     });
 }
 
+
+
+function computeAndStoreCosineSimilarity() {
+    chrome.storage.local.get(['userRecommendationVector', 'metadataList'], (result) => {
+        let userVecRaw = result.userRecommendationVector;
+        if (typeof userVecRaw === "string") userVecRaw = JSON.parse(userVecRaw);
+        const metadataList = result.metadataList || [];
+
+        const totalEntry = userVecRaw.find(e => e.total);
+        if (!totalEntry) {
+            console.warn("No 'total' entry in userRecommendationVector.");
+            return;
+        }
+
+        const userVector = totalEntry.total;
+        const cosineResults = [];
+
+        for (const video of metadataList) {
+			const shortUUID = video.shortUUID;
+			const tokens = video?.Video_description_vector?.recommended_standard?.tokens || [];
+
+			const videoVector = {};
+			tokens.forEach(token => videoVector[token] = 1);
+
+			const similarity = cosineSimilarity(userVector, videoVector);
+			cosineResults.push({ shortUUID, similarity: parseFloat(similarity.toFixed(4)) });
+		}
+
+		cosineResults.sort((a, b) => b.similarity - a.similarity);
+        chrome.storage.local.set({ cosine_similarity: cosineResults }, () => {
+            console.log("✅ Cosine similarity scores saved to extension storage.");
+        });
+    });
+}
+
+// Function to load watch history and initialize data for current video
 // Function to load watch history and initialize data for current video
 function loadWatchHistory(callback) {
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -284,31 +341,52 @@ function loadWatchHistory(callback) {
                 if (!Array.isArray(prev)) {
                     prev = []; // Ensure it's an array
                 }
-                console.log('Watch history loaded from storage:', prev);
+                //console.log('Watch history loaded from storage:', prev);
 
                 // Find existing data for current URL
                 const existingData = prev.find(item => item.url === currentURL);
                 if (existingData) {
                     console.log('Found existing data for current URL:', existingData);
                     data = existingData; // Use existing data
+                    
+                    // Update sessionStart if there's a video playing and sessionStart is null
+                    const video = document.querySelector("video");
+                    if (video && (data.sessionStart === null || data.sessionStart === undefined)) {
+                        data.sessionStart = video.currentTime;
+                        console.log("Updated sessionStart with current video position:", video.currentTime);
+                    }
                 } else {
-                    // Initialize fresh data for new URL
-                    data = initializeData();
+                    // Get current video timestamp if video exists
+                    const video = document.querySelector("video");
+                    const currentVideoTime = video ? video.currentTime : 0;
+                    
+                    // Initialize fresh data for new URL with current video time
+                    data = initializeData(currentVideoTime);
                     // Add the new data to the prev array
                     prev.push(data);
-                    console.log('No existing data found for current URL. Initializing fresh data and adding to array.');
+                    console.log('No existing data found for current URL. Initializing fresh data with timestamp:', currentVideoTime);
                 }
             } catch (e) {
                 console.error('Error parsing watch history:', e);
                 prev = []; // Reset to empty array in case of parsing error
-                data = initializeData(); // Ensure data is initialized
+                
+                // Get current video timestamp if video exists
+                const video = document.querySelector("video");
+                const currentVideoTime = video ? video.currentTime : 0;
+                
+                data = initializeData(currentVideoTime); // Ensure data is initialized with timestamp
                 prev.push(data); // Add the new data to the prev array
             }
         } else {
             prev = []; // If no data in storage, start with an empty array
-            data = initializeData(); // Ensure data is initialized
+            
+            // Get current video timestamp if video exists
+            const video = document.querySelector("video");
+            const currentVideoTime = video ? video.currentTime : 0;
+            
+            data = initializeData(currentVideoTime); // Initialize with timestamp
             prev.push(data); // Add the new data to the prev array
-            console.log('No watch history found in storage. Initializing fresh data and adding to array.');
+            console.log('No watch history found in storage. Initializing fresh data with timestamp:', currentVideoTime);
         }
 
         // Call the main function after loading the watch history.
@@ -326,8 +404,12 @@ setInterval(() => {
         lastURL = window.location.href;
         currentURL = window.location.href; // Update currentURL
 
-        // Re-initialize data for the new URL
-        data = initializeData();
+        // Get current video timestamp if video exists
+        const video = document.querySelector("video");
+        const currentVideoTime = video ? video.currentTime : 0;
+
+        // Re-initialize data for the new URL with current video time
+        data = initializeData(currentVideoTime);
 
         // Add the new data to the prev array if it doesn't exist
         const existingIndex = prev.findIndex(item => item.url === currentURL);
@@ -337,6 +419,20 @@ setInterval(() => {
 
         loadWatchHistory(() => {
             console.log("Watch history loaded/reloaded after URL change.");
+            
+            // Ensure sessionStart is updated after history loads if we have a video
+            if (video) {
+                data.sessionStart = video.currentTime;
+                
+                // Also initialize the currentSession if video is playing
+                if (!video.paused && currentSession === null) {
+                    currentSession = {
+                        start: video.currentTime,
+                        lastRecordedTime: video.currentTime
+                    };
+                    console.log("⚡ Initialized session with current video timestamp:", video.currentTime);
+                }
+            }
         });
     }
 }, 1000);
@@ -782,6 +878,25 @@ function setupTracking() {
     window.addEventListener('beforeunload', function() {
         saveWatchData(true);
     });
+    
+    // ⚡ Initialize session immediately if video is already playing
+    const video = document.querySelector("video");
+    if (video) {
+        // Always update sessionStart with current time, whether video is playing or not
+        if (data.sessionStart === null || data.sessionStart === undefined) {
+            data.sessionStart = video.currentTime;
+            console.log("⚡ Updated sessionStart with current timestamp:", video.currentTime);
+        }
+        
+        // Only create a session if the video is playing
+        if (!video.paused && currentSession === null) {
+            currentSession = {
+                start: video.currentTime,
+                lastRecordedTime: video.currentTime
+            };
+            console.log("⚡ Initialized session tracking at current position:", video.currentTime);
+        }
+    }
     
     // Periodically re-check live status (every 2 minutes)
     setInterval(() => {

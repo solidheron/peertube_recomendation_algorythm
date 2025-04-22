@@ -1,9 +1,9 @@
 "use strict";
 
 // --- Metadata Extraction ---
-const instanceUrl = 'https://dalek.zone/'; // Corrected instance URL!
-const count = 10;
-const maxPages = 1;
+const instanceUrl = 'https://peertube.1312.media/'; // Corrected instance URL!
+const count = 40;
+const maxPages = 3;
 
 // --- Tokenizer and Processing Functions ---
 function stripLinks(text) {
@@ -352,13 +352,16 @@ function mergeMetadataList(newData) {
 
         // Process each new item
         newMetadataList.forEach(newItem => {
+            // Make sure we properly extract the tokens array
+            const tokens = newItem.Video_description_vector?.recommended_standard?.tokens || [];
+            
             const extractedItem = {
                 "shortUUID": newItem.shortUUID,
                 "uuid": newItem.uuid,
                 "Video_description_vector": {
                     "recommended_standard": {
                         "isTrue": newItem.Video_description_vector?.recommended_standard?.isTrue,
-                        "tokens": newItem.Video_description_vector?.recommended_standard?.tokens
+                        "tokens": tokens  // Ensure tokens are properly copied
                     }
                 }
             };
