@@ -1,4 +1,4 @@
-**This is a browser extension for Chrome-based browsers like Brave.**
+*This is a browser extension for Chrome-based browsers like Brave.**
 
 ### Installation Instructions
 
@@ -9,3 +9,10 @@
 
 The extension should now be installed and active.
 
+---
+
+### License
+
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+
+The MIT License is a permissive open-source license that allows you to freely use, modify, and distribute the code—even in commercial projects—as long as the original license and copyright notice are included.
