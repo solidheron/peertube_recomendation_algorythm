@@ -10,7 +10,11 @@
 The extension should now be installed and active.
 
 ---
+### How it works
+The algorithm currently just looks at how much time you spent watching unique segments of a video, then assigns a value in seconds to all the words in the title, description, and tags, and sums that over all videos then does a cosine similarity score with other known videos. all data is stored in browser storage
 
+### known issues
+when a video starts in the middle it will write the data as if it started from the second 0
 ### License
 
 This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
