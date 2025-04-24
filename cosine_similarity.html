@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PeerTube Recommendations</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem; }
+    th { background: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <h1>Video Recommendations</h1>
+  <table id="results">
+    <thead>
+      <tr>
+        <th>Similarity</th>
+        <th>Video</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script src="cosine_similarity.js" defer></script>
+</body>
+</html>
