@@ -6,6 +6,16 @@ let ctrlPressed = false;
 let shiftPressed = false;
 let lastSaveTime = 0;
 const interval = 1; // interval in seconds
+const knownInstances = [
+  'https://dalek.zone',
+  'https://peertube.1312.media',
+  'https://peertube.mastodon.host',
+  'https://video.blender.org',
+  'https://tilvids.com/',
+  'https://video.hardlimit.com/'
+  // add more as needed
+];
+
 
 // Initialize variables
 let currentURL = window.location.href; // Initialize currentURL
@@ -54,7 +64,7 @@ function tokenize(text) {
         .replace(/[^\w\s]/g, "")
         .split(/\s+/)
         .filter(word => word.length > 1);
-    console.log("Tokens generated:", tokens); // Log the tokens
+    //console.log("Tokens generated:", tokens); // Log the tokens
     return tokens;
 }
 
@@ -91,60 +101,57 @@ function processVideoMetadata(video) {
 
 // Enhanced function to fetch video info and update metadataList
 function fetchVideoInfoAndUpdateMetadata(shortUUID) {
-    return new Promise((resolve, reject) => {
-        chrome.storage.local.get(['instanceUrl', 'metadataList'], (result) => {
-            const instanceUrl = result.instanceUrl || 'https://dalek.zone/';
-            const metadataList = result.metadataList || [];
-            const videoApiUrl = `${instanceUrl.replace(/\/$/, '')}/api/v1/videos/${shortUUID}`;
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(['metadataList'], async (result) => {
+      const metadataList = result.metadataList || [];
 
-            fetch(videoApiUrl)
-                .then(response => {
-                    if (!response.ok) {
-                        if (response.status === 404) {
-                            console.warn(`Video ${shortUUID} not found on instance. Returning null.`);
-                            resolve(null);  // Resolve with null for 404
-                        } else {
-                            reject(new Error(`Failed to fetch video info for ${shortUUID}: ${response.statusText}`));
-                        }
-                    }
-                    return response.json();
-                })
-                .then(videoData => {
-                    if (!videoData) {
-                        resolve(null);
-                        return;
-                    }
-                    
-                    // Add shortUUID to the video data
-                    videoData.shortUUID = shortUUID;
-                    
-                    // Process the video metadata to extract tokens
-                    const processedVideo = processVideoMetadata(videoData);
-                    
-                    // Check if this video already exists in metadataList
-                    const existingIndex = metadataList.findIndex(item => 
-                        item.uuid === processedVideo.uuid || item.shortUUID === shortUUID);
-                    
-                    // Update or add to metadataList
-                    if (existingIndex !== -1) {
-                        metadataList[existingIndex] = processedVideo;
-                    } else {
-                        metadataList.push(processedVideo);
-                    }
-                    
-                    // Save the updated metadataList
-                    chrome.storage.local.set({ metadataList: metadataList }, () => {
-                        console.log(`âœ… Added/updated video ${shortUUID} in metadataList`);
-                        resolve(processedVideo);
-                    });
-                })
-                .catch(error => {
-                    console.error(`Error fetching video info for ${shortUUID}:`, error);
-                    reject(error);
-                });
-        });
+      let videoData = null;
+      let workingInstance = null;
+
+      for (const instance of knownInstances) {
+        const videoApiUrl = `${instance}/api/v1/videos/${shortUUID}`;
+        try {
+          const response = await fetch(videoApiUrl);
+          if (response.ok) {
+            videoData = await response.json();
+            workingInstance = instance;
+            break; // ✅ stop once found
+          } else if (response.status === 404) {
+            console.warn(`🔍 ${shortUUID} not found on ${instance}`);
+          }
+        } catch (err) {
+          console.warn(`⚠️ Fetch error on ${instance} for ${shortUUID}: ${err.message}`);
+        }
+      }
+
+      if (!videoData) {
+        console.warn(`❌ Could not fetch metadata for ${shortUUID} from any known instance`);
+        return resolve(null); // return null but not fatal
+      }
+
+      videoData.shortUUID = shortUUID;
+      videoData.sourceInstance = workingInstance;
+
+      const processedVideo = processVideoMetadata(videoData);
+
+      const existingIndex = metadataList.findIndex(item =>
+        item.uuid === processedVideo.uuid || item.shortUUID === shortUUID
+      );
+
+      if (existingIndex !== -1) {
+        metadataList[existingIndex] = processedVideo;
+      } else {
+        metadataList.push(processedVideo);
+      }
+
+      chrome.storage.local.set({ metadataList }, () => {
+        console.log(`✅ Video ${shortUUID} loaded from ${workingInstance}`);
+        resolve(processedVideo);
+      });
     });
+  });
 }
+
 function cosineSimilarity(userVec, videoVec) {
     let dot = 0, userMag = 0, videoMag = 0;
 
@@ -251,6 +258,29 @@ function createUserRecommendationVector(peertubeWatchHistory) {
         });
     });
 }
+
+chrome.storage.local.get(['cosine_similarity', 'preferredInstance'], (result) => {
+  const data = result.cosine_similarity || [];
+  const preferredInstance = result.preferredInstance || '';
+  const tbody = document.querySelector('#results tbody');
+
+  data.forEach(entry => {
+    const row = document.createElement('tr');
+
+    const videoLink = `<a href="${entry.url}" target="_blank">${entry.url}</a>`;
+    const altLink = preferredInstance
+      ? `<a href="${preferredInstance}/w/${entry.shortUUID}" target="_blank">${preferredInstance}/w/${entry.shortUUID}</a>`
+      : '(not set)';
+
+    row.innerHTML = `
+      <td>${entry.similarity}</td>
+      <td>${videoLink}</td>
+      <td>${altLink}</td>
+    `;
+
+    tbody.appendChild(row);
+  });
+});
 
 
 // Function to fetch video info by shortUUID

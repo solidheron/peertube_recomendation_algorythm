@@ -1,6 +1,6 @@
 "use strict";
 
-const instanceUrl = 'https://peertube.1312.media/';
+const instanceUrl = 'https://dalek.zone';
 const count = 40;
 const maxPages = 3;
 
@@ -101,12 +101,14 @@ async function fetchVideoUUIDs() {
 async function fetchAndSaveMetadata(uuids, processedSet) {
   chrome.storage.local.get(['metadataList'], (result) => {
     let metadataList = result.metadataList || [];
+    let added = 0; // ✅ Track how many were added
 
     const fetchNext = async (index = 0) => {
       if (index >= uuids.length) {
         const processed = processMetadataList(metadataList);
+
         chrome.storage.local.set({ metadataList: processed }, () => {
-          console.log("✅ Metadata processed and saved.");
+          console.log(`✅ Finished metadata fetch. Added ${added} new video(s) to metadataList.`);
         });
         return;
       }
@@ -116,12 +118,26 @@ async function fetchAndSaveMetadata(uuids, processedSet) {
 
       try {
         const response = await fetch(`${instanceUrl}/api/v1/videos/${uuid}`);
-        if (!response.ok) throw new Error("Not found");
+
+        if (!response.ok) {
+          console.warn(`⚠️ Skipping UUID ${uuid}: ${response.status} ${response.statusText}`);
+          processedSet.add(uuid);
+          return fetchNext(index + 1);
+        }
+
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          const text = await response.text();
+          console.warn(`⚠️ UUID ${uuid} returned non-JSON content:\n${text.slice(0, 100)}...`);
+          processedSet.add(uuid);
+          return fetchNext(index + 1);
+        }
 
         const metadata = await response.json();
         metadata.shortUUID = metadata.shortUUID || uuid;
         metadataList.push(metadata);
         processedSet.add(uuid);
+        added++; // ✅ Count it!
 
         chrome.storage.local.set({
           metadataList: metadataList,
@@ -130,7 +146,7 @@ async function fetchAndSaveMetadata(uuids, processedSet) {
           fetchNext(index + 1);
         });
       } catch (err) {
-        console.warn(`Error fetching metadata for ${uuid}:`, err.message);
+        console.warn(`❌ Error fetching metadata for ${uuid}: ${err.message}`);
         await sleep(500);
         fetchNext(index + 1);
       }

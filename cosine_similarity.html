@@ -5,18 +5,25 @@
   <title>PeerTube Recommendations</title>
   <style>
     body { font-family: sans-serif; padding: 1rem; }
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { border: 1px solid #ccc; padding: 0.5rem; }
     th { background: #f0f0f0; }
+    input, button { padding: 6px; margin-right: 6px; }
   </style>
 </head>
 <body>
   <h1>Video Recommendations</h1>
+
+  <label for="instanceInput">Preferred Instance:</label>
+  <input type="text" id="instanceInput" placeholder="https://your.instance" />
+  <button id="saveInstance">Save</button>
+
   <table id="results">
     <thead>
       <tr>
         <th>Similarity</th>
-        <th>Video</th>
+        <th>Original Video</th>
+        <th>Your Preferred Instance</th>
       </tr>
     </thead>
     <tbody></tbody>
