@@ -4,27 +4,97 @@
   <meta charset="UTF-8" />
   <title>PeerTube Recommendations</title>
   <style>
-    body { font-family: sans-serif; padding: 1rem; }
-    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-    th, td { border: 1px solid #ccc; padding: 0.5rem; }
-    th { background: #f0f0f0; }
-    input, button { padding: 6px; margin-right: 6px; }
+    body { 
+    font-family: sans-serif; 
+    padding: 1rem; 
+    max-width: 1200px; 
+    margin: 0 auto; 
+    }
+    table { 
+    width: 100%; 
+    border-collapse: collapse; 
+    margin-top: 1rem; 
+    }
+    th, td { 
+    border: 1px solid #ccc; 
+    padding: 0.5rem; 
+    }
+    th { 
+    background: #f0f0f0; 
+    cursor: pointer;
+    }
+    th:hover {
+    background: #e0e0e0;
+    }
+    th::after {
+    content: "";
+    margin-left: 5px;
+    }
+    th.sort-asc::after {
+    content: "▲";
+    }
+    th.sort-desc::after {
+    content: "▼";
+    }
+    input, button { 
+    padding: 6px; 
+    margin-right: 6px; 
+    }
+    .instance-management {
+    margin: 20px 0;
+    padding: 15px;
+    background: #f8f8f8;
+    border-radius: 5px;
+    }
+    #instancesList {
+    margin-top: 10px;
+    }
+    .instance-item {
+    display: inline-block;
+    margin: 5px;
+    padding: 5px 10px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    }
+    .remove-instance {
+    cursor: pointer;
+    color: #ff4444;
+    margin-left: 8px;
+    }
+    .instance-link {
+    margin-right: 10px;
+    text-decoration: none;
+    color: #2196F3;
+    }
+    .instance-link:hover {
+    text-decoration: underline;
+    }
+    tr.seen {
+    opacity: 0.6;
+    }
   </style>
 </head>
 <body>
   <h1>Video Recommendations</h1>
 
-  <label for="instanceInput">Preferred Instance:</label>
-  <input type="text" id="instanceInput" placeholder="https://your.instance" />
-  <button id="saveInstance">Save</button>
+  <div class="instance-management">
+    <div>
+    <label for="instanceInput">Add Preferred Instance:</label>
+    <input type="text" id="instanceInput" placeholder="https://your.instance" />
+    <button id="saveInstance">Add Instance</button>
+    </div>
+    <div id="instancesList"></div>
+  </div>
 
   <table id="results">
     <thead>
-      <tr>
-        <th>Similarity</th>
-        <th>Original Video</th>
-        <th>Your Preferred Instance</th>
-      </tr>
+    <tr>
+    <th data-sort="time" class="sort-desc">Time Similarity</th>
+    <th data-sort="like">Like Similarity</th>
+    <th>Original Video</th>
+    <th>Your Preferred Instances</th>
+    </tr>
     </thead>
     <tbody></tbody>
   </table>

@@ -1,47 +1,53 @@
 {
-  "manifest_version": 3,
-  "name": "PeerTube Extension Suite",
+  "manifest_version": 2,
+  "name": "PeerTube Watch History and Recommendations",
   "version": "1.0",
-  "description": "Combines PeerTube metadata extraction and watch tracking functionalities.",
+  "description": "Tracks watch history and provides recommendations for PeerTube videos",
   
   "permissions": [
     "storage",
-    "downloads",
     "alarms",
-    "tabs"
-  ],
-
-  "host_permissions": [
-    "*://*/"
+    "unlimitedStorage",
+    "*://*/*"
   ],
 
   "background": {
-    "service_worker": "background.js"
-  },
-
-  "action": {
-    "default_title": "PeerTube Tools",
-    "default_popup": "popup.html"
+    "scripts": [
+      "db.js",
+      "background.js"
+    ],
+    "persistent": true
   },
 
   "content_scripts": [
     {
       "matches": [
-        "*://*/w/*",
         "*://*/videos/watch/*",
+        "*://*/w/*",
         "*://*/v/*"
       ],
-      "js": ["content.js"]
+      "js": [
+        "db.js",
+        "content.js"
+      ],
+      "run_at": "document_end"
     }
   ],
 
+  "browser_action": {
+    "default_title": "PeerTube Recommendations",
+    "default_popup": "cosine_similarity.html"
+  },
+
   "web_accessible_resources": [
-    {
-      "resources": [
-        "cosine_similarity.html",
-        "cosine_similarity.js"
-      ],
-      "matches": ["<all_urls>"]
-    }
-  ]
+    "db.js",
+    "content.js",
+    "background.js",
+    "cosine_similarity.js",
+	"videoUUIDs.json.json",
+	"metadataList.json",
+    "processedUUIDs.json"
+  ],
+
+  "content_security_policy": "script-src 'self' 'unsafe-eval'; object-src 'self'"
 }

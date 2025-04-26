@@ -1,9 +1,46 @@
 "use strict";
 
-const instanceUrl = 'https://dalek.zone';
-const count = 40;
-const maxPages = 3;
+const instances = [
+  'https://peertube.1312.media',
+  'https://video.blender.org',
+  'https://peertube.wtf',
+  'https://tilvids.com',
+  'https://video.hardlimit.com'
+];
 
+const instanceUrl = 'https://dalek.zone';
+const count = 10;
+const maxPages = 2;
+async function processAllInstances() {
+  for (const instance of instances) {
+    await fetchVideoUUIDs(instance);
+    await sleep(5000); // 5s between instances
+  }
+}
+
+// Function to clean existing metadata in storage
+function cleanExistingMetadata() {
+  chrome.storage.local.get(['metadataList'], (result) => {
+    if (result.metadataList) {
+      const cleanedList = result.metadataList.map(cleanMetadata);
+      chrome.storage.local.set({ metadataList: cleanedList }, () => {
+        console.log('✅ Cleaned existing metadata list');
+        
+        // Log storage usage
+        chrome.storage.local.getBytesInUse(null, (bytesInUse) => {
+          console.log(`📊 Storage usage: ${(bytesInUse / 1024 / 1024).toFixed(2)} MB`);
+        });
+      });
+    }
+  });
+}
+
+// Add to runtime.onInstalled listener
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('metadataFetcher', { periodInMinutes: 60 });
+  cleanExistingMetadata(); // Clean existing metadata on installation/update
+  processAllInstances();
+});
 // Helper functions
 function stripLinks(text) {
   return text.replace(/https?:\/\/\S+|www\.\S+/g, "");
@@ -22,10 +59,9 @@ function sleep(ms) {
 
 function processMetadataList(metadataList) {
   return metadataList.map(video => {
-    if (video.isLive || !video.name && !video.description) return video;
+    if (video.isLive || !video.name && !video.description) return cleanMetadata(video);
 
     let tokens = [];
-
     if (video.name) tokens.push(...tokenize(video.name));
     if (Array.isArray(video.tags)) {
       video.tags.forEach(tag => {
@@ -33,128 +69,214 @@ function processMetadataList(metadataList) {
       });
     }
     if (video.description) tokens.push(...tokenize(stripLinks(video.description)));
-
     tokens = [...new Set(tokens)];
 
-    video.Video_description_vector = video.Video_description_vector || {};
-    video.Video_description_vector.recommended_standard = video.Video_description_vector.recommended_standard || {};
-    video.Video_description_vector.recommended_standard.tokens = tokens;
+    const cleanedVideo = cleanMetadata(video);
+    cleanedVideo.Video_description_vector = cleanedVideo.Video_description_vector || {};
+    cleanedVideo.Video_description_vector.recommended_standard = cleanedVideo.Video_description_vector.recommended_standard || {};
+    cleanedVideo.Video_description_vector.recommended_standard.tokens = tokens;
 
-    return video;
+    return cleanedVideo;
   });
 }
-
 // Fetch and save video metadata
-async function fetchVideoUUIDs() {
-  const baseUrl = instanceUrl.replace(/\/$/, '');
+async function fetchVideoUUIDs(currentInstance) {
+  currentInstance = currentInstance || instanceUrl;
+  const baseUrl = currentInstance.replace(/\/$/, '');
   const allUUIDs = new Set();
-  const newestTemplate = `${baseUrl}/api/v1/videos?sort=-publishedAt&nsfw=both&count=${count}`;
+  
+  // Use the most efficient endpoints that return multiple videos
   const apiUrlTemplates = [
-    newestTemplate,
-    `${baseUrl}/api/v1/videos?sort=-createdAt&count=${count}`,
-    `${baseUrl}/api/v1/videos?sort=-views&count=${count}`,
-    `${baseUrl}/api/v1/videos?sort=-likes&count=${count}`,
+    `${baseUrl}/api/v1/videos?sort=-publishedAt&nsfw=both&count=${count}`,
     `${baseUrl}/api/v1/videos?sort=-trending&count=${count}`,
-    `${baseUrl}/api/v1/videos?count=${count}`
+    `${baseUrl}/api/v1/videos?sort=-views&count=${count}`
   ];
+  
+  const storageKey = `processedUUIDs`;
 
-  chrome.storage.local.get(['processedUUIDs'], async (result) => {
-    const processedUUIDs = new Set(result.processedUUIDs || []);
-
-    for (const template of apiUrlTemplates) {
-      if (template === newestTemplate) {
-        for (let start = 0; start < maxPages * count; start += count) {
-          const url = template + `&start=${start}`;
-          try {
-            const response = await fetch(url);
-            if (!response.ok) break;
-            const data = await response.json();
-            const uuids = Array.isArray(data.data) ? data.data.map(v => v.uuid) : [];
-            if (!uuids.length) break;
-            uuids.forEach(uuid => allUUIDs.add(uuid));
-          } catch (err) {
-            console.error("Fetch failed:", err);
-            await sleep(500);
-          }
-        }
-      } else {
+  chrome.storage.local.get([storageKey], async (result) => {
+    const processedUUIDs = new Set(result[storageKey] || []);
+    
+    // Collect all promises for parallel execution
+    const fetchPromises = apiUrlTemplates.map(async (template) => {
+      // For each template, fetch multiple pages
+      for (let start = 0; start < maxPages * count; start += count) {
+        const url = template + `&start=${start}`;
         try {
-          const response = await fetch(template + '&start=0');
+          const response = await fetch(url);
+          if (!response.ok) break;
           const data = await response.json();
-          const uuids = Array.isArray(data.data) ? data.data.map(v => v.uuid) : [];
-          uuids.forEach(uuid => allUUIDs.add(uuid));
+          
+          // Extract both UUIDs and metadata in one go
+          if (Array.isArray(data.data)) {
+            data.data.forEach(video => {
+              allUUIDs.add(video.uuid);
+            });
+          }
+          
+          // If we have enough videos or reached the end, stop fetching more pages
+          if (data.data.length < count) break;
+          
+          // Respect rate limits
+          await sleep(300);
         } catch (err) {
-          console.error("Fetch failed:", err);
+          console.error(`Fetch failed for ${currentInstance}:`, err);
+          await sleep(500);
         }
       }
-    }
+    });
+
+    // Wait for all fetches to complete
+    await Promise.all(fetchPromises);
 
     const newUUIDs = Array.from(allUUIDs).filter(uuid => !processedUUIDs.has(uuid));
-    if (!newUUIDs.length) return;
+    if (!newUUIDs.length) {
+      console.log(`✅ ${currentInstance}: No new videos to process`);
+      return;
+    }
 
-    chrome.storage.local.set({ videoUUIDs: newUUIDs }, () => {
-      fetchAndSaveMetadata(newUUIDs, processedUUIDs);
-    });
+    console.log(`🔍 ${currentInstance}: Found ${newUUIDs.length} new videos to process`);
+    
+    // Process videos in batches using the more efficient endpoint
+    fetchAndSaveMetadata(currentInstance, newUUIDs, processedUUIDs);
   });
 }
-
-async function fetchAndSaveMetadata(uuids, processedSet) {
-  chrome.storage.local.get(['metadataList'], (result) => {
-    let metadataList = result.metadataList || [];
-    let added = 0; // ✅ Track how many were added
+async function fetchAndSaveMetadata(currentInstance, uuids, processedSet) {
+  try {
+    let metadataList = await db.getMetadataList();
+    let added = 0;
 
     const fetchNext = async (index = 0) => {
       if (index >= uuids.length) {
         const processed = processMetadataList(metadataList);
-
-        chrome.storage.local.set({ metadataList: processed }, () => {
-          console.log(`✅ Finished metadata fetch. Added ${added} new video(s) to metadataList.`);
-        });
+        await db.saveMetadataList(processed);
+        console.log(`✅ ${currentInstance}: Added ${added} new videos`);
         return;
       }
 
       const uuid = uuids[index];
-      if (processedSet.has(uuid)) return fetchNext(index + 1);
+      if (processedSet.has(uuid)) {
+        return fetchNext(index + 1);
+      }
 
       try {
-        const response = await fetch(`${instanceUrl}/api/v1/videos/${uuid}`);
-
+        const response = await fetch(`${currentInstance}/api/v1/videos/${uuid}`);
+        
         if (!response.ok) {
-          console.warn(`⚠️ Skipping UUID ${uuid}: ${response.status} ${response.statusText}`);
-          processedSet.add(uuid);
-          return fetchNext(index + 1);
-        }
-
-        const contentType = response.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          const text = await response.text();
-          console.warn(`⚠️ UUID ${uuid} returned non-JSON content:\n${text.slice(0, 100)}...`);
+          console.warn(`⚠️ ${currentInstance}: Skipping ${uuid}, status: ${response.status}`);
           processedSet.add(uuid);
           return fetchNext(index + 1);
         }
 
         const metadata = await response.json();
-        metadata.shortUUID = metadata.shortUUID || uuid;
-        metadataList.push(metadata);
+        const cleanedMetadata = cleanMetadata(metadata);
+        cleanedMetadata.shortUUID = cleanedMetadata.shortUUID || uuid;
+        cleanedMetadata.sourceInstance = currentInstance;
+        
+        metadataList.push(cleanedMetadata);
         processedSet.add(uuid);
-        added++; // ✅ Count it!
+        added++;
 
+        // Save processed UUIDs to chrome.storage
         chrome.storage.local.set({
-          metadataList: metadataList,
           processedUUIDs: Array.from(processedSet)
         }, () => {
-          fetchNext(index + 1);
+          // Add delay between requests to avoid rate limiting
+          setTimeout(() => fetchNext(index + 1), 500);
         });
+        
       } catch (err) {
-        console.warn(`❌ Error fetching metadata for ${uuid}: ${err.message}`);
-        await sleep(500);
-        fetchNext(index + 1);
+        console.warn(`❌ ${currentInstance}: Error ${uuid} - ${err.message}`);
+        // Continue with next UUID after a short delay
+        setTimeout(() => fetchNext(index + 1), 500);
       }
     };
 
-    fetchNext();
+    await fetchNext();
+  } catch (error) {
+    console.error("Error in fetchAndSaveMetadata:", error);
+  }
+}
+
+function cleanMetadata(metadata) {
+  const cleaned = {
+    shortUUID: metadata.shortUUID,
+    uuid: metadata.uuid,
+    name: metadata.name,
+    description: metadata.description,
+    duration: metadata.duration,
+    views: metadata.views,
+    likes: metadata.likes,
+    dislikes: metadata.dislikes,
+    nsfw: metadata.nsfw,
+    tags: metadata.tags,
+    url: metadata.url,
+    embedUrl: metadata.embedUrl,
+    thumbnailPath: metadata.thumbnailPath,
+    previewPath: metadata.previewPath,
+    publishedAt: metadata.publishedAt,
+    account: {
+      name: metadata.account?.name,
+      displayName: metadata.account?.displayName,
+      url: metadata.account?.url
+    },
+    channel: metadata.channel ? {
+      name: metadata.channel.name,
+      displayName: metadata.channel.displayName,
+      url: metadata.channel.url
+    } : null
+  };
+
+  // Process video description for recommendation
+  let tokens = [];
+  
+  // Add title tokens
+  if (cleaned.name) {
+    tokens.push(...tokenize(cleaned.name));
+  }
+
+  // Add tag tokens
+  if (Array.isArray(cleaned.tags)) {
+    cleaned.tags.forEach(tag => {
+      if (typeof tag === 'string') {
+        tokens.push(tag.toLowerCase());
+      } else if (tag && tag.name) {
+        tokens.push(tag.name.toLowerCase());
+      }
+    });
+  }
+
+  // Add description tokens
+  if (cleaned.description) {
+    const cleanDesc = stripLinks(cleaned.description);
+    tokens.push(...tokenize(cleanDesc));
+  }
+
+  // Remove duplicates and empty tokens
+  tokens = [...new Set(tokens)].filter(token => token && token.length > 1);
+
+  // Add recommendation vector
+  cleaned.Video_description_vector = {
+    recommended_standard: {
+      tokens: tokens
+    }
+  };
+
+  return cleaned;
+}
+
+function processMetadataList(metadataList) {
+  // Remove duplicates based on shortUUID
+  const seen = new Set();
+  return metadataList.filter(item => {
+    if (seen.has(item.shortUUID)) {
+      return false;
+    }
+    seen.add(item.shortUUID);
+    return true;
   });
 }
+
 
 // Alarms
 chrome.runtime.onInstalled.addListener(() => {
@@ -169,6 +291,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     fetchVideoUUIDs();
   }
 });
+// In background.js
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "getMetadataList") {
+    db.getMetadataList()
+      .then(metadataList => {
+        console.log("Sending metadata list to content script:", metadataList.length);
+        sendResponse({ metadataList: metadataList });
+      })
+      .catch(error => {
+        console.error("Error getting metadata list:", error);
+        sendResponse({ error: error.message });
+      });
+    return true; // Will respond asynchronously
+  }
+});
+
 
 // Allow popup or content script to trigger fetch manually
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

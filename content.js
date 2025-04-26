@@ -1,5 +1,7 @@
 // content.js
 
+
+console.log('content.js');
 // Global variables
 let currentSession = null;
 let ctrlPressed = false;
@@ -11,8 +13,8 @@ const knownInstances = [
   'https://peertube.1312.media',
   'https://peertube.mastodon.host',
   'https://video.blender.org',
-  'https://tilvids.com/',
-  'https://video.hardlimit.com/'
+  'https://tilvids.com',
+  'https://video.hardlimit.com'
   // add more as needed
 ];
 
@@ -43,20 +45,8 @@ function initializeData(currentVideoTime = 0) {
   };
 }
 
-
-// Improved function to extract shortUUID from URL
-function extractShortUUIDFromURL(url) {
-    // This regex captures the shortUUID from various URL patterns
-    const regex = /(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/;
-    const match = url.match(regex);
-    return match ? match[1] : null;
-}
-
 // Function to tokenize and process a single video
 // Add these functions to content.js - they're the same as in background.js
-function stripLinks(text) {
-    return text.replace(/https?:\/\/\S+|www\.\S+/g, "");
-}
 
 function tokenize(text) {
     const tokens = text
@@ -171,100 +161,292 @@ function cosineSimilarity(userVec, videoVec) {
     return dot / (userMag * videoMag);
 }
 
-// Updated createUserRecommendationVector function
-function createUserRecommendationVector(peertubeWatchHistory) {
-    const shortUUIDs = [];
 
-    for (const entry of peertubeWatchHistory) {
-        if (!entry.isLive && entry.url) {
-            const shortUUID = extractShortUUIDFromURL(entry.url);
-            if (shortUUID) {
-                shortUUIDs.push(shortUUID);
-            }
+
+
+async function createUserRecommendationVector(peertubeWatchHistory) {
+  console.log("Creating user recommendation vector from watch history...");
+  
+  try {
+    // Get metadata from background script
+    const response = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { action: "getMetadataList" },
+        (response) => {
+          console.log("Received metadata response");
+          resolve(response);
         }
+      );
+    });
+
+    let metadataList = response?.metadataList || [];
+    console.log(`Retrieved ${metadataList.length} metadata items from DB`);
+    
+    // Fetch missing metadata
+    const fetchedMetadata = [];
+    
+    for (const watchEntry of peertubeWatchHistory) {
+      if (!watchEntry.url) continue;
+      
+      const shortUUID = extractShortUUIDFromURL(watchEntry.url);
+      if (!shortUUID) continue;
+      
+      // Check if metadata exists in the list
+      if (!metadataList.some(item => item.shortUUID === shortUUID)) {        
+        const metadata = await fetchMissingMetadata(shortUUID, watchEntry);
+        if (metadata) {
+          fetchedMetadata.push(metadata);
+        }
+      }
+    }
+    
+    if (fetchedMetadata.length > 0) {
+      console.log(`Fetched ${fetchedMetadata.length} new metadata items`);
+      // Add fetched metadata to the list
+      metadataList = [...metadataList, ...fetchedMetadata];
+    }
+    
+    // Initialize vectors for accumulating engagement
+    const totalTokens = {
+      time_engagement: {},
+      like_engagement: {}
+    };
+
+    // Process each watched video
+    let processedCount = 0;
+    
+    for (const watchEntry of peertubeWatchHistory) {
+      if (!watchEntry.url) continue;
+      
+      const shortUUID = extractShortUUIDFromURL(watchEntry.url);
+      if (!shortUUID) continue;
+      
+      const metadata = metadataList.find(item => item.shortUUID === shortUUID);
+      
+      if (!metadata) {
+        console.warn(`⚠️ Still no metadata for ${shortUUID}`);
+        continue;
+      }
+
+      const tokens = metadata?.Video_description_vector?.recommended_standard?.tokens;
+      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        console.warn(`⚠️ No valid tokens for ${shortUUID}`);
+        continue;
+      }
+
+      const overlapWatchTime = watchEntry.overlap_watchtime || 0;
+      let likeValue = 0;
+      if (watchEntry.liked) likeValue = 1;
+      else if (watchEntry.disliked) likeValue = -1;
+
+      console.log(`Processing ${shortUUID}: watchTime=${overlapWatchTime}, likeValue=${likeValue}, tokens=${tokens.length}`);
+
+      if (overlapWatchTime > 0 || likeValue !== 0) {
+        tokens.forEach(token => {
+          if (typeof token === 'string' && token.trim()) {
+            const cleanToken = token.trim();
+
+            // Add time engagement
+            if (overlapWatchTime > 0) {
+              totalTokens.time_engagement[cleanToken] = 
+                (totalTokens.time_engagement[cleanToken] || 0) + overlapWatchTime;
+            }
+
+            // Add like engagement
+            if (likeValue !== 0) {
+              totalTokens.like_engagement[cleanToken] = 
+                (totalTokens.like_engagement[cleanToken] || 0) + likeValue;
+            }
+          }
+        });
+        processedCount++;
+      }
     }
 
-    return new Promise((resolve) => {
-        chrome.storage.local.get(['metadataList'], (result) => {
-            const metadataList = result.metadataList || [];
-            const enhancedVector = [];
-            const totalTokens = {};
-            const missingUUIDs = [];
+    console.log(`Processed ${processedCount} videos with engagement`);
+    console.log("Time engagement tokens:", Object.keys(totalTokens.time_engagement).length);
+    console.log("Like engagement tokens:", Object.keys(totalTokens.like_engagement).length);
 
-            shortUUIDs.forEach(shortUUID => {
-                const found = metadataList.some(item => item.shortUUID === shortUUID);
-                if (!found) {
-                    missingUUIDs.push(shortUUID);
-                }
-            });
+    // Create the final vector
+    const enhancedVector = [{
+      total: {
+        time_engagement: totalTokens.time_engagement,
+        like_engagement: totalTokens.like_engagement
+      }
+    }];
 
-            const processVector = (list) => {
-                shortUUIDs.forEach(shortUUID => {
-                    const metadata = list.find(item => item.shortUUID === shortUUID);
-                    const watchEntry = peertubeWatchHistory.find(entry => extractShortUUIDFromURL(entry.url) === shortUUID);
-                    const overlapWatchTime = watchEntry?.overlap_watchtime || 0;
+    return enhancedVector;
 
-                    const vector = {};
-                    if (metadata?.Video_description_vector?.recommended_standard?.tokens) {
-                        metadata.Video_description_vector.recommended_standard.tokens.forEach(token => {
-                            vector[token] = overlapWatchTime;
-
-                            // Accumulate into total
-                            if (totalTokens[token]) {
-                                totalTokens[token] += overlapWatchTime;
-                            } else {
-                                totalTokens[token] = overlapWatchTime;
-                            }
-                        });
-                    }
-
-                    enhancedVector.push({
-                        shortUUID: shortUUID,
-                        tokens: vector
-                    });
-                });
-
-                // Calculate vector magnitude of the total
-				let magnitude = 0;
-				for (const token in totalTokens) {
-					magnitude += Math.pow(totalTokens[token], 2);
-				}
-				magnitude = Math.sqrt(magnitude);
-
-				// Append total and magnitude to the vector
-				enhancedVector.push({
-					total: totalTokens
-				});
-				enhancedVector.push({
-					vector_magnitude: parseFloat(magnitude.toFixed(4))
-				});
-
-				
-                resolve(enhancedVector);
-            };
-
-            if (missingUUIDs.length === 0) {
-                processVector(metadataList);
-            } else {
-                console.log(`Fetching data for ${missingUUIDs.length} missing videos`);
-                Promise.all(missingUUIDs.map(shortUUID =>
-                    fetchVideoInfoAndUpdateMetadata(shortUUID).catch(() => null)
-                )).then(() => {
-                    chrome.storage.local.get(['metadataList'], (updated) => {
-                        processVector(updated.metadataList || []);
-                    });
-                });
-            }
-        });
-    });
+  } catch (error) {
+    console.error("Error in createUserRecommendationVector:", error);
+    return [{
+      total: {
+        time_engagement: {},
+        like_engagement: {}
+      }
+    }];
+  }
 }
 
+// Helper function to extract shortUUID from URL
+function extractShortUUIDFromURL(url) {
+  try {
+    const regex = /(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/;
+    const match = url.match(regex);
+    return match ? match[1] : null;
+  } catch (error) {
+    console.error("Error extracting UUID from URL:", error);
+    return null;
+  }
+}
+
+// Function to trigger vector creation and update
+async function updateUserVector() {
+  try {
+    console.group("🔄 Updating User Vector");
+    
+    const result = await new Promise(resolve => 
+      chrome.storage.local.get(['peertubeWatchHistory'], resolve)
+    );
+    
+    const watchHistory = Array.isArray(result.peertubeWatchHistory) 
+      ? result.peertubeWatchHistory 
+      : [];
+    
+    console.log("Watch history entries:", watchHistory.length);
+    
+    if (watchHistory.length === 0) {
+      console.warn("Watch history is empty");
+      console.groupEnd();
+      return;
+    }
+    
+    const userVector = await createUserRecommendationVector(watchHistory);
+    
+    console.log("Saving user vector:", userVector);
+    
+    // Check if vector has content
+    const hasTimeEngagement = Object.keys(userVector[0]?.total?.time_engagement || {}).length > 0;
+    const hasLikeEngagement = Object.keys(userVector[0]?.total?.like_engagement || {}).length > 0;
+    
+    console.log("Vector has time engagement:", hasTimeEngagement);
+    console.log("Vector has like engagement:", hasLikeEngagement);
+    
+    if (!hasTimeEngagement && !hasLikeEngagement) {
+      console.warn("Vector is empty, not saving");
+      console.groupEnd();
+      return;
+    }
+    
+    // Save to storage
+    await new Promise(resolve => 
+      chrome.storage.local.set({ userRecommendationVector: userVector }, resolve)
+    );
+    
+    console.log("User vector saved successfully");
+    
+    // Verify it was saved correctly
+    const verification = await new Promise(resolve => 
+      chrome.storage.local.get(['userRecommendationVector'], resolve)
+    );
+    
+    console.log("Verification:", verification);
+    console.groupEnd();
+    
+    // Now compute cosine similarity
+    await computeAndStoreCosineSimilarity();
+    
+  } catch (error) {
+    console.error("Error in updateUserVector:", error);
+    console.groupEnd();
+  }
+}
+
+
+
+
+// Helper function to fetch video info and update metadata
+async function fetchVideoInfoAndUpdateMetadata(shortUUID) {
+  const instances = [
+    'https://dalek.zone',
+    'https://peertube.1312.media',
+    'https://peertube.mastodon.host',
+    'https://video.blender.org',
+    'https://tilvids.com',
+    'https://video.hardlimit.com'
+  ];
+
+  for (const instance of instances) {
+    try {
+      const response = await fetch(`${instance}/api/v1/videos/${shortUUID}`);
+      if (!response.ok) continue;
+
+      const metadata = await response.json();
+      const processedMetadata = processVideoMetadata({
+        ...metadata,
+        shortUUID,
+        sourceInstance: instance
+      });
+
+      return processedMetadata;
+
+    } catch (error) {
+      console.warn(`Failed to fetch from ${instance}:`, error);
+      continue;
+    }
+  }
+  return null;
+}
+
+// Helper function to process video metadata
+function processVideoMetadata(video) {
+  let tokens = [];
+  
+  if (video.name) {
+    tokens.push(...tokenize(video.name));
+  }
+
+  if (Array.isArray(video.tags)) {
+    video.tags.forEach(tag => {
+      if (tag && typeof tag === 'string') {
+        tokens.push(tag.toLowerCase());
+      } else if (tag && tag.name) {
+        tokens.push(tag.name.toLowerCase());
+      }
+    });
+  }
+
+  if (video.description) {
+    const cleanDesc = stripLinks(video.description);
+    tokens.push(...tokenize(cleanDesc));
+  }
+
+  // Remove duplicates and empty tokens
+  tokens = [...new Set(tokens)].filter(token => token && token.length > 1);
+  
+  video.Video_description_vector = {
+    recommended_standard: {
+      tokens: tokens
+    }
+  };
+  
+  return video;
+}
+
+// Sleep helper function
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 chrome.storage.local.get(['cosine_similarity', 'preferredInstance'], (result) => {
   const data = result.cosine_similarity || [];
   const preferredInstance = result.preferredInstance || '';
   const tbody = document.querySelector('#results tbody');
-
-  data.forEach(entry => {
+	if (!tbody) {
+	  console.warn('No #results tbody found in the DOM.');
+	  return;
+	}
+  tbody.innerHTML = '';
+	data.forEach(entry => {
     const row = document.createElement('tr');
 
     const videoLink = `<a href="${entry.url}" target="_blank">${entry.url}</a>`;
@@ -273,7 +455,7 @@ chrome.storage.local.get(['cosine_similarity', 'preferredInstance'], (result) =>
       : '(not set)';
 
     row.innerHTML = `
-      <td>${entry.similarity}</td>
+      <td>${entry.time_engagement_similarity}</td>  // Changed from similarity to time_engagement_similarity
       <td>${videoLink}</td>
       <td>${altLink}</td>
     `;
@@ -313,6 +495,170 @@ function fetchVideoInfoByShortUUID(shortUUID) {
     });
 }
 
+// Add these functions to your content.js file
+
+function cleanMetadata(metadata) {
+  // Extract only the fields we need
+  const cleaned = {
+    shortUUID: metadata.shortUUID,
+    uuid: metadata.uuid,
+    name: metadata.name,
+    description: metadata.description,
+    duration: metadata.duration,
+    views: metadata.views,
+    likes: metadata.likes,
+    dislikes: metadata.dislikes,
+    nsfw: metadata.nsfw,
+    tags: metadata.tags,
+    url: metadata.url,
+    embedUrl: metadata.embedUrl,
+    thumbnailPath: metadata.thumbnailPath,
+    previewPath: metadata.previewPath,
+    publishedAt: metadata.publishedAt,
+    account: {
+      name: metadata.account?.name,
+      displayName: metadata.account?.displayName,
+      url: metadata.account?.url
+    },
+    channel: metadata.channel ? {
+      name: metadata.channel.name,
+      displayName: metadata.channel.displayName,
+      url: metadata.channel.url
+    } : null
+  };
+
+  // Process video description for recommendation
+  let tokens = [];
+  
+  // Add title tokens
+  if (cleaned.name) {
+    tokens.push(...tokenize(cleaned.name));
+  }
+
+  // Add tag tokens
+  if (Array.isArray(cleaned.tags)) {
+    cleaned.tags.forEach(tag => {
+      if (typeof tag === 'string') {
+        tokens.push(tag.toLowerCase());
+      } else if (tag && tag.name) {
+        tokens.push(tag.name.toLowerCase());
+      }
+    });
+  }
+
+  // Add description tokens
+  if (cleaned.description) {
+    const cleanDesc = stripLinks(cleaned.description);
+    tokens.push(...tokenize(cleanDesc));
+  }
+
+  // Remove duplicates and empty tokens
+  tokens = [...new Set(tokens)].filter(token => token && token.length > 1);
+
+  // Add recommendation vector
+  cleaned.Video_description_vector = {
+    recommended_standard: {
+      tokens: tokens
+    }
+  };
+
+  return cleaned;
+}
+
+function stripLinks(text) {
+  return text.replace(/https?:\/\/\S+|www\.\S+/g, "");
+}
+
+async function fetchMissingMetadata(shortUUID, watchEntry = null) {
+  console.log(`🔍 Fetching missing metadata for ${shortUUID}...`);
+  
+  // Try to determine the source instance from the watch entry URL
+  let sourceInstance = null;
+  if (watchEntry && watchEntry.url) {
+    try {
+      const urlObj = new URL(watchEntry.url);
+      sourceInstance = `${urlObj.protocol}//${urlObj.hostname}`;
+      console.log(`Extracted source instance from URL: ${sourceInstance}`);
+    } catch (e) {
+      console.warn(`Could not extract instance from URL: ${watchEntry.url}`);
+    }
+  }
+  
+  // List of instances to try
+  const instances = [
+    sourceInstance, // Try the source instance first if available
+    'https://peertube.1312.media',
+    'https://video.blender.org',
+    'https://tilvids.com',
+    'https://video.hardlimit.com'
+  ].filter(Boolean); // Remove null entries
+  
+  for (const instance of instances) {
+    try {
+      console.log(`Trying ${instance} for ${shortUUID}...`);
+      const response = await fetch(`${instance}/api/v1/videos/${shortUUID}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`✅ Found metadata for ${shortUUID} on ${instance}`);
+        
+        try {
+          // Process metadata
+          const metadata = cleanMetadata(data);
+          metadata.shortUUID = shortUUID;
+          metadata.sourceInstance = instance;
+          
+          // Save to database via background script
+          await new Promise(resolve => {
+            chrome.runtime.sendMessage(
+              { 
+                action: "saveMetadata", 
+                metadata: metadata 
+              },
+              resolve
+            );
+          });
+          
+          console.log(`✅ Saved metadata for ${shortUUID}`);
+          return metadata;
+        } catch (processError) {
+          console.error(`Error processing metadata for ${shortUUID}:`, processError);
+        }
+      }
+    } catch (error) {
+      console.warn(`Error fetching from ${instance} for ${shortUUID}:`, error);
+    }
+  }
+  
+  // If all fails, create a minimal metadata entry
+  console.warn(`⚠️ Could not fetch metadata for ${shortUUID}, creating minimal entry`);
+  
+  const minimalMetadata = {
+    shortUUID: shortUUID,
+    name: `Unknown Video (${shortUUID})`,
+    description: "Metadata unavailable",
+    Video_description_vector: {
+      recommended_standard: {
+        tokens: ["unknown", "video", "unavailable"]
+      }
+    },
+    unavailable: true
+  };
+  
+  // Save minimal metadata
+  await new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { 
+        action: "saveMetadata", 
+        metadata: minimalMetadata 
+      },
+      resolve
+    );
+  });
+  
+  return minimalMetadata;
+}
+
 // Function to store enhanced user recommendation vector
 function storeUserRecommendationVector() {
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -330,65 +676,348 @@ function storeUserRecommendationVector() {
     });
 }
 
-
-
-function computeAndStoreCosineSimilarity() {
-    chrome.storage.local.get(['userRecommendationVector', 'metadataList', 'instanceUrl'], (result) => {
-        let userVecRaw = result.userRecommendationVector;
-        if (typeof userVecRaw === "string") userVecRaw = JSON.parse(userVecRaw);
-        const metadataList = result.metadataList || [];
-        const instanceUrl = result.instanceUrl || window.location.origin;
-        const baseUrl = instanceUrl.replace(/\/$/, '');
-
-        const totalEntry = userVecRaw.find(e => e.total);
-        if (!totalEntry) {
-            console.warn("No 'total' entry in userRecommendationVector.");
-            return;
-        }
-
-        const userVector = totalEntry.total;
-        const cosineResults = [];
-
-        for (const video of metadataList) {
-            const shortUUID = video.shortUUID;
-            const tokens = video?.Video_description_vector?.recommended_standard?.tokens || [];
-
-            // Extract URL from metadata or construct one
-            let videoUrl = video.url; // Try to get existing URL first
-            
-            // If URL is not available in metadata, construct one from shortUUID
-            if (!videoUrl && shortUUID) {
-                videoUrl = `${baseUrl}/videos/watch/${shortUUID}`;
-            }
-
-            const videoVector = {};
-            tokens.forEach(token => videoVector[token] = 1);
-
-            const similarity = cosineSimilarity(userVector, videoVector);
-            // Extract instance domain from full URL
-			let modUrl = null;
-			try {
-				const urlObj = new URL(videoUrl);
-				modUrl = `${urlObj.origin}/w/${shortUUID}`;
-			} catch (e) {
-				console.warn("Invalid URL for mod_url generation:", videoUrl);
-			}
-
-			cosineResults.push({ 
-				shortUUID,
-				url: videoUrl,
-				mod_url: modUrl,
-				similarity: parseFloat(similarity.toFixed(4))
-			});
-
-        }
-
-        cosineResults.sort((a, b) => b.similarity - a.similarity);
-        chrome.storage.local.set({ cosine_similarity: cosineResults }, () => {
-            console.log("✅ Cosine similarity scores with URLs saved to extension storage.");
-        });
+async function computeAndStoreCosineSimilarity() {
+  console.group("📊 Computing cosine similarity");
+  
+  try {
+    // Get user recommendation vector
+    const userVecResult = await new Promise(resolve => 
+      chrome.storage.local.get(['userRecommendationVector'], resolve)
+    );
+    
+    let userVecRaw = userVecResult.userRecommendationVector;
+    if (typeof userVecRaw === "string") userVecRaw = JSON.parse(userVecRaw);
+    
+    console.log("User vector:", userVecRaw);
+    
+    if (!userVecRaw || !Array.isArray(userVecRaw) || userVecRaw.length === 0) {
+      console.warn("⚠️ Empty or invalid user vector");
+      console.groupEnd();
+      return;
+    }
+    
+    // Extract engagement vectors
+    const totalEntry = userVecRaw.find(e => e.total) || { total: {} };
+    const timeEngagementVector = totalEntry.total.time_engagement || {};
+    const likeEngagementVector = totalEntry.total.like_engagement || {};
+    
+    console.log("Time engagement tokens:", Object.keys(timeEngagementVector).length);
+    console.log("Like engagement tokens:", Object.keys(likeEngagementVector).length);
+    
+    // Get metadata from background
+    const response = await new Promise(resolve => {
+      chrome.runtime.sendMessage(
+        { action: "getMetadataList" },
+        response => resolve(response || {})
+      );
     });
+    
+    // Ensure metadataList is an array
+    const metadataList = Array.isArray(response.metadataList) 
+      ? response.metadataList 
+      : [];
+    
+    console.log(`Processing ${metadataList.length} videos for similarity`);
+    
+    if (metadataList.length === 0) {
+      console.warn("⚠️ Empty metadata list");
+      console.groupEnd();
+      return;
+    }
+    
+    // Calculate similarity for each video
+    const results = [];
+    
+    for (const video of metadataList) {
+      // Skip invalid entries
+      if (!video || !video.shortUUID) continue;
+      
+      // Get video tokens
+      const tokens = video?.Video_description_vector?.recommended_standard?.tokens;
+      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        console.log(`Skipping ${video.shortUUID}: no valid tokens`);
+        continue;
+      }
+      
+      // Create video vector (using binary representation - token presence)
+      const videoVector = {};
+      for (const token of tokens) {
+        if (typeof token === 'string' && token.trim()) {
+          videoVector[token.trim()] = 1;
+        }
+      }
+      
+      // Calculate cosine similarity
+      const timeSimilarity = cosineSimilarity(timeEngagementVector, videoVector);
+      const likeSimilarity = cosineSimilarity(likeEngagementVector, videoVector);
+      
+      // Add to results
+      results.push({
+        shortUUID: video.shortUUID,
+        url: video.url,
+        name: video.name,
+        tokens: {
+          time_engagement_similarity: Number(timeSimilarity.toFixed(4)),
+          like_engagement_similarity: Number(likeSimilarity.toFixed(4))
+        }
+      });
+    }
+    
+    // Sort by time engagement similarity (descending)
+    results.sort((a, b) => 
+      b.tokens.time_engagement_similarity - a.tokens.time_engagement_similarity
+    );
+    
+    console.log(`Calculated similarity for ${results.length} videos`);
+    console.log("Top result:", results[0]);
+    
+    // Save to storage
+    await new Promise(resolve => 
+      chrome.storage.local.set({ cosine_similarity: results }, resolve)
+    );
+    
+    console.log("✅ Saved similarity results");
+    console.groupEnd();
+    
+  } catch (error) {
+    console.error("Error in computeAndStoreCosineSimilarity:", error);
+    console.groupEnd();
+  }
 }
+
+// Cosine similarity function
+function cosineSimilarity(vecA, vecB) {
+  // Handle empty vectors
+  if (!vecA || !vecB) return 0;
+  
+  const keysA = Object.keys(vecA);
+  const keysB = Object.keys(vecB);
+  
+  if (keysA.length === 0 || keysB.length === 0) return 0;
+  
+  // Calculate dot product
+  let dotProduct = 0;
+  for (const key of keysA) {
+    if (vecB[key]) {
+      dotProduct += vecA[key] * vecB[key];
+    }
+  }
+  
+  // Calculate magnitudes
+  let magnitudeA = 0;
+  for (const key of keysA) {
+    magnitudeA += vecA[key] * vecA[key];
+  }
+  magnitudeA = Math.sqrt(magnitudeA);
+  
+  let magnitudeB = 0;
+  for (const key of keysB) {
+    magnitudeB += vecB[key] * vecB[key];
+  }
+  magnitudeB = Math.sqrt(magnitudeB);
+  
+  // Calculate cosine similarity
+  if (magnitudeA === 0 || magnitudeB === 0) return 0;
+  return dotProduct / (magnitudeA * magnitudeB);
+}
+function calculateCosineSimilarity(vecA, vecB, debugId = '') {
+  
+  
+  // Validate vectors
+  if (!vecA || !vecB || typeof vecA !== 'object' || typeof vecB !== 'object') {
+    console.error(`[${debugId}] Invalid vector types:`, {
+      vecAType: typeof vecA,
+      vecBType: typeof vecB
+    });
+    return 0;
+  }
+
+  const keysA = Object.keys(vecA);
+  const keysB = Object.keys(vecB);
+
+  if (keysA.length === 0 || keysB.length === 0) {
+    console.warn(`[${debugId}] Empty vector detected:`, {
+      vecALength: keysA.length,
+      vecBLength: keysB.length
+    });
+    return 0;
+  }
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  // Calculate dot product and norms
+  for (const key of keysA) {
+    const valueA = vecA[key] || 0;
+    const valueB = vecB[key] || 0;
+    
+    dotProduct += valueA * valueB;
+    normA += valueA * valueA;
+  }
+
+  for (const key of keysB) {
+    const valueB = vecB[key] || 0;
+    normB += valueB * valueB;
+  }
+
+  // Calculate magnitudes
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
+
+  console.log(`[${debugId}] Calculation details:`, {
+    dotProduct,
+    normA,
+    normB
+  });
+
+  // Check for zero magnitudes
+  if (normA === 0 || normB === 0) {
+    console.warn(`[${debugId}] Zero magnitude detected:`, {
+      normA,
+      normB
+    });
+    return 0;
+  }
+
+  const similarity = dotProduct / (normA * normB);
+  
+  console.log(`[${debugId}] Final similarity:`, similarity);
+  
+  return similarity;
+}
+
+// Add this function to check vector validity
+function validateVector(vector, name) {
+  console.log(`Validating ${name}:`, {
+    type: typeof vector,
+    isObject: typeof vector === 'object',
+    keys: Object.keys(vector),
+    values: Object.values(vector)
+  });
+  
+  if (!vector || typeof vector !== 'object') {
+    console.error(`Invalid ${name}: not an object`);
+    return false;
+  }
+  
+  const keys = Object.keys(vector);
+  if (keys.length === 0) {
+    console.error(`Invalid ${name}: empty object`);
+    return false;
+  }
+  
+  // Check if all values are numbers
+  const hasInvalidValues = Object.values(vector).some(v => typeof v !== 'number');
+  if (hasInvalidValues) {
+    console.error(`Invalid ${name}: contains non-numeric values`);
+    return false;
+  }
+  
+  return true;
+}
+// Helper function to calculate cosine similarity
+function cosineSimilarity(vecA, vecB) {
+
+  
+  // If either vector is empty, return 0
+  if (Object.keys(vecA).length === 0 || Object.keys(vecB).length === 0) {
+    console.warn("Empty vector in cosine similarity calculation");
+    return 0;
+  }
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  // Calculate dot product and norms
+  for (const key in vecA) {
+    const valueA = vecA[key] || 0;
+    const valueB = vecB[key] || 0;
+    
+    dotProduct += valueA * valueB;
+    normA += valueA * valueA;
+  }
+
+  for (const key in vecB) {
+    const valueB = vecB[key] || 0;
+    normB += valueB * valueB;
+  }
+
+  // Calculate magnitude
+  normA = Math.sqrt(normA);
+  normB = Math.sqrt(normB);
+
+  // Avoid division by zero
+  if (normA === 0 || normB === 0) {
+    console.warn("Zero magnitude in cosine similarity calculation");
+    return 0;
+  }
+
+  const similarity = dotProduct / (normA * normB);
+  
+  return similarity;
+}
+
+// Function to trigger the cosine similarity calculation
+async function updateRecommendations() {
+  try {
+    console.log("Starting recommendation update...");
+    
+    // First, ensure we have the latest metadata
+    const metadataList = await db.getMetadataList();
+    console.log(`Found ${metadataList.length} videos in metadata`);
+    
+    // Then compute cosine similarity
+    await computeAndStoreCosineSimilarity();
+    
+    console.log("Recommendation update complete");
+  } catch (error) {
+    console.error("Error updating recommendations:", error);
+  }
+}
+
+// Add this to your message listener in content.js
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "updateRecommendations") {
+    updateRecommendations()
+      .then(() => sendResponse({status: "success"}))
+      .catch(error => sendResponse({status: "error", message: error.toString()}));
+    return true;  // Will respond asynchronously
+  }
+});
+// Cosine similarity function
+
+// In content.js, after loading watch history
+function processWatchHistory() {
+  chrome.storage.local.get(['peertubeWatchHistory'], async (result) => {
+    const watchHistory = Array.isArray(result.peertubeWatchHistory) 
+      ? result.peertubeWatchHistory 
+      : [];
+    
+    console.log("Processing watch history:", watchHistory);
+    
+    if (watchHistory.length === 0) {
+      console.warn("Watch history is empty");
+      return;
+    }
+
+    try {
+      const userVector = await createUserRecommendationVector(watchHistory);
+      
+      chrome.storage.local.set({ userRecommendationVector: userVector }, () => {
+        console.log("User recommendation vector saved");
+        computeAndStoreCosineSimilarity();
+      });
+    } catch (error) {
+      console.error("Error processing watch history:", error);
+    }
+  });
+}
+
+// Call this function when appropriate, e.g., when the user clicks a button
+// or when the extension popup is opened
+
 // Function to load watch history and initialize data for current video
 function loadWatchHistory(callback) {
   chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -854,21 +1483,56 @@ function saveWatchData(isFinalSave = false) {
 }
 
 // Add this new function to verify storage is working properly
+// Store your interval ID so you can clear it
+let storageVerificationInterval = null;
+
+// Update your verification function with error handling
 function verifyStorage() {
-    chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
-        if (result.peertubeWatchHistory) {
-            try {
-                const savedData = JSON.parse(result.peertubeWatchHistory);
-                console.log(`✅ Storage verification: Found ${savedData.length} items in peertubeWatchHistory`);
-            } catch (e) {
-                console.error("❌ Storage verification: Error parsing peertubeWatchHistory:", e);
+    return new Promise((resolve, reject) => {
+        try {
+            // Check if extension context is still valid
+            if (!chrome.runtime || !chrome.runtime.id) {
+                console.log("Extension context invalidated - reloading page");
+                window.location.reload();
+                return resolve(false);
             }
-        } else {
-            console.warn("⚠️ Storage verification: peertubeWatchHistory not found in storage");
+
+            chrome.storage.local.get(['peertubeWatchHistory'], result => {
+                if (chrome.runtime.lastError) {
+                    console.error("Storage error:", chrome.runtime.lastError);
+                    return resolve(false);
+                }
+                resolve(true);
+            });
+        } catch (error) {
+            console.error("Error in verifyStorage:", error);
+            if (error.message.includes("Extension context invalidated")) {
+                window.location.reload();
+            }
+            resolve(false);
         }
     });
 }
 
+// Replace your current setInterval with this:
+function startStorageVerification() {
+  if (storageVerificationInterval) {
+    clearInterval(storageVerificationInterval);
+  }
+  
+  storageVerificationInterval = setInterval(verifyStorage, 60000); // Check every minute
+  
+  // Also clear interval when page unloads
+  window.addEventListener('beforeunload', function() {
+    if (storageVerificationInterval) {
+      clearInterval(storageVerificationInterval);
+      storageVerificationInterval = null;
+    }
+  });
+}
+
+// Start verification when document is ready
+document.addEventListener('DOMContentLoaded', startStorageVerification);
 setInterval(verifyStorage, 30000);
 // Function that will run after watch history is loaded
 // Function to check if a video is live using the PeerTube API
@@ -1402,18 +2066,149 @@ function runOnce(key, fn) {
 
 // content.js
 // Function to load and merge data from file
-function loadAndMergeData(dataType) {
-    const filename = `${dataType}.json`;
-    fetch(chrome.runtime.getURL(filename))
-        .then(response => response.json())
-        .then(data => {
-            chrome.runtime.sendMessage({
-                action: `merge${dataType.charAt(0).toUpperCase() + dataType.slice(1)}`,
-                data: data
+function loadAndMergeData(callback) {
+    chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
+        // Ensure watchHistory is an array
+        let watchHistory = Array.isArray(result.peertubeWatchHistory) 
+            ? result.peertubeWatchHistory 
+            : [];
+        
+        // Get current video info
+        const currentVideoUUID = getVideoUUID();
+        const currentVideoUrl = window.location.href;
+        
+        if (!currentVideoUUID) {
+            console.warn('Could not extract video UUID from URL');
+            return;
+        }
+
+        // Find or create entry for current video
+        let entry = watchHistory.find(e => e.uuid === currentVideoUUID);
+        if (!entry) {
+            entry = {
+                uuid: currentVideoUUID,
+                url: currentVideoUrl,
+                overlap_watchtime: 0,
+                liked: false,
+                disliked: false,
+                timestamp: Date.now()
+            };
+            watchHistory.push(entry);
+        }
+
+        // Save merged data back to storage
+        chrome.storage.local.set({ 
+            peertubeWatchHistory: watchHistory 
+        }, () => {
+            if (callback) callback(entry);
+        });
+    });
+}
+
+// Helper function to get video UUID from URL
+function getVideoUUID() {
+    const match = window.location.pathname.match(/(?:\/videos\/watch\/|\/w\/|\/v\/)([a-zA-Z0-9\-_]+)/);
+    return match ? match[1] : null;
+}
+
+// Initialize when the page loads
+document.addEventListener('DOMContentLoaded', () => {
+    console.log("Content script loaded, initializing...");
+    loadAndMergeData((entry) => {
+        console.log("Watch history entry:", entry);
+        currentSession = entry;
+        initializeWatchTimeTracking();
+    });
+});
+
+function initializeWatchTimeTracking() {
+    if (!currentSession) {
+        console.warn("No current session to track");
+        return;
+    }
+
+    console.log("Initializing watch time tracking");
+    let watchStart = Date.now();
+    let lastUpdate = Date.now();
+    let watchTimer = setInterval(() => {
+        const video = document.querySelector('video');
+        if (video && !video.paused) {
+            const now = Date.now();
+            const elapsed = (now - lastUpdate) / 1000; // Convert to seconds
+            currentSession.overlap_watchtime += elapsed;
+            
+            // Save to storage
+            chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
+                let history = Array.isArray(result.peertubeWatchHistory) 
+                    ? result.peertubeWatchHistory 
+                    : [];
+                const index = history.findIndex(e => e.uuid === currentSession.uuid);
+                if (index !== -1) {
+                    history[index] = currentSession;
+                }
+                chrome.storage.local.set({ 
+                    peertubeWatchHistory: history 
+                }, () => {
+                    console.log("Watch time updated:", currentSession.overlap_watchtime);
+                });
             });
-            console.log(`${filename} loaded successfully and merge requested.`);
-        })
-        .catch(error => console.error(`Could not load ${filename}:`, error));
+
+            lastUpdate = now;
+        }
+    }, 5000); // Update every 5 seconds
+
+    // Clean up on page unload
+    window.addEventListener('beforeunload', () => {
+        clearInterval(watchTimer);
+        // Final save
+        chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
+            let history = Array.isArray(result.peertubeWatchHistory) 
+                ? result.peertubeWatchHistory 
+                : [];
+            const index = history.findIndex(e => e.uuid === currentSession.uuid);
+            if (index !== -1) {
+                history[index] = currentSession;
+            }
+            chrome.storage.local.set({ 
+                peertubeWatchHistory: history 
+            }, () => {
+                console.log("Final watch time saved:", currentSession.overlap_watchtime);
+            });
+        });
+    });
+
+    // Track likes/dislikes
+    document.addEventListener('click', (e) => {
+        if (e.target.closest('.action-button-like')) {
+            currentSession.liked = true;
+            currentSession.disliked = false;
+            saveCurrentSession();
+            console.log("Video liked");
+        } else if (e.target.closest('.action-button-dislike')) {
+            currentSession.liked = false;
+            currentSession.disliked = true;
+            saveCurrentSession();
+            console.log("Video disliked");
+        }
+    });
+}
+
+function saveCurrentSession() {
+    if (!currentSession) return;
+    chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
+        let history = Array.isArray(result.peertubeWatchHistory) 
+            ? result.peertubeWatchHistory 
+            : [];
+        const index = history.findIndex(e => e.uuid === currentSession.uuid);
+        if (index !== -1) {
+            history[index] = currentSession;
+        }
+        chrome.storage.local.set({ 
+            peertubeWatchHistory: history 
+        }, () => {
+            console.log("Session saved:", currentSession);
+        });
+    });
 }
 
 // Load data for each type, using runOnce to ensure they only run once
