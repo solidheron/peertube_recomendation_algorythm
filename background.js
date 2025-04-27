@@ -9,8 +9,8 @@ const instances = [
 ];
 
 const instanceUrl = 'https://dalek.zone';
-const count = 100;
-const maxPages = 3;
+const count = 25;
+const maxPages = 6;
 async function processAllInstances() {
   for (const instance of instances) {
     await fetchVideoUUIDs(instance);
