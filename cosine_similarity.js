@@ -7,6 +7,35 @@ function getDomainFromUrl(url) {
     return url;
   }
 }
+// Helper function to insert line breaks every 60 characters
+// Helper function to insert line breaks before spaces near 60-character limit
+function insertLineBreaks(title, maxChars = 60) {
+  let lines = [];
+  let currentLine = '';
+  
+  // Split title into words
+  const words = title.split(' ');
+  
+  for (const word of words) {
+    // Check if adding the next word exceeds the max length
+    if (currentLine.length + word.length + 1 > maxChars) {
+      // If current line is empty (word is too long), add it anyway
+      if (currentLine === '') {
+        lines.push(word);
+      } else {
+        lines.push(currentLine.trim());
+      }
+      currentLine = word;
+    } else {
+      currentLine += ` ${word}`;
+    }
+  }
+  
+  // Add the last line
+  lines.push(currentLine.trim());
+  
+  return lines.join('<br>');
+}
 
 function constructVideoUrl(baseUrl, shortUUID) {
   try {
@@ -15,6 +44,16 @@ function constructVideoUrl(baseUrl, shortUUID) {
   } catch (e) {
     console.error('Error constructing video URL:', e);
     return baseUrl;
+  }
+}
+
+async function checkUrlValidity(url) {
+  try {
+    const response = await fetch(url, { method: 'HEAD' });
+    return response.ok && response.status !== 404;
+  } catch (error) {
+    console.error(`Error checking URL ${url}:`, error);
+    return false;
   }
 }
 
@@ -56,19 +95,17 @@ async function getMetadataFromDB(shortUUID) {
       request.onerror = () => reject(request.error);
     });
   } catch (error) {
-    console.error(`Error fetching metadata for ${shortUUID}:`, error);
+    //console.error(`Error fetching metadata for ${shortUUID}:`, error);
     return null;
   }
 }
 
-function renderTable(data, preferredInstances, seenUUIDs) {
+async function renderTable(data, preferredInstances, seenUUIDs) {
   const tbody = document.querySelector('#results tbody');
   tbody.innerHTML = '';
 
-  // Process data with seen status and adjusted similarity scores
   const processedData = [...data].map(entry => {
     const alreadySeen = seenUUIDs.has(entry.shortUUID);
-    // Apply 0.5 multiplier to both similarity scores if video has been seen
     const adjustedTimeSimilarity = alreadySeen ? 
       entry.tokens.time_engagement_similarity * 0.5 : 
       entry.tokens.time_engagement_similarity;
@@ -84,7 +121,6 @@ function renderTable(data, preferredInstances, seenUUIDs) {
     };
   });
 
-  // Sort data based on current sort column and direction
   const sortedData = processedData.sort((a, b) => {
     let valueA, valueB;
 
@@ -96,34 +132,45 @@ function renderTable(data, preferredInstances, seenUUIDs) {
       valueB = b.adjustedLikeSimilarity;
     }
 
-    // Apply sort direction
     return currentSortDirection === 'desc' ? valueB - valueA : valueA - valueB;
   });
 
-  // Limit to 500 rows
-  const limitedData = sortedData.slice(0, 500);
+  const channelCount = new Map();
+  const filteredData = [];
+  for (const entry of sortedData) {
+    const channelName = entry.channel?.displayName || entry.shortUUID;
+    const currentCount = channelCount.get(channelName) || 0;
+    if (currentCount < 5) {
+      filteredData.push(entry);
+      channelCount.set(channelName, currentCount + 1);
+    }
+  }
 
-  // Create and append rows
-  limitedData.forEach(async (entry) => {
-    // Construct the original URL with shortUUID
+  const limitedData = filteredData.slice(0, 500);
+
+  // Use for...of to await async calls properly
+  for (const entry of limitedData) {
     const originalUrl = constructVideoUrl(entry.url, entry.shortUUID);
 
-    // Create row element
     const row = document.createElement('tr');
     if (entry.alreadySeen) {
       row.classList.add('seen');
     }
 
-    // Add time and like similarity cells
-    row.innerHTML = `
-      <td>${entry.adjustedTimeSimilarity.toFixed(3)}</td>
-      <td>${entry.adjustedLikeSimilarity.toFixed(3)}</td>
-      <td class="video-cell" data-uuid="${entry.shortUUID}">
-        <div class="video-info">
-          <a href="${originalUrl}" target="_blank" class="video-url">${originalUrl}</a>
-          <div class="video-metadata">
-            <div class="account-info">Account: ${entry.account?.displayName || 'Unknown'}</div>
-            ${entry.channel?.displayName ? `<div class="channel-info">Channel: ${entry.channel.displayName}</div>` : ''}
+    // Render initial metadata from entry (fallback to Unknown)
+    const accountName = entry.account?.displayName || 'Unknown';
+    const channelName = entry.channel?.displayName || '';
+
+	row.innerHTML = `
+	  <td>${entry.adjustedTimeSimilarity.toFixed(3)}</td>
+	  <td>${entry.adjustedLikeSimilarity.toFixed(3)}</td>
+	  <td class="video-cell" data-uuid="${entry.shortUUID}">
+		<div class="video-info">
+		  <div class="video-title">${insertLineBreaks(entry.title)}</div>
+		  <a href="${originalUrl}" target="_blank" class="video-url">${originalUrl}</a>
+		  <div class="video-metadata">
+			<div class="account-info">Account: ${accountName}</div>
+			${channelName ? `<div class="channel-info">Channel: ${channelName}</div>` : ''}
           </div>
         </div>
       </td>
@@ -131,10 +178,10 @@ function renderTable(data, preferredInstances, seenUUIDs) {
         preferredInstances.length > 0
           ? preferredInstances.map(instance => 
               `<a href="${instance}/w/${entry.shortUUID}" 
-              target="_blank" 
-              class="instance-link" 
-              title="${instance}/w/${entry.shortUUID}">
-              ${getDomainFromUrl(instance)}
+                  target="_blank" 
+                  class="instance-link" 
+                  title="${instance}/w/${entry.shortUUID}">
+                  ${getDomainFromUrl(instance)}
               </a>`
             ).join('')
           : '(no instances set)'
@@ -143,7 +190,7 @@ function renderTable(data, preferredInstances, seenUUIDs) {
 
     tbody.appendChild(row);
 
-    // Try to get additional metadata from IndexedDB
+    // Fetch and update metadata asynchronously
     try {
       const metadata = await getMetadataFromDB(entry.shortUUID);
       if (metadata) {
@@ -151,17 +198,24 @@ function renderTable(data, preferredInstances, seenUUIDs) {
         if (videoCell) {
           const metadataDiv = videoCell.querySelector('.video-metadata');
           if (metadataDiv) {
+            // Update metadata with fresh data or fallback
+            const updatedAccountName = metadata.account?.displayName || 'Unknown';
+            const updatedChannelName = metadata.channel?.displayName || '';
+
             metadataDiv.innerHTML = `
-              <div class="account-info">Account: ${metadata.account?.displayName || 'Unknown'}</div>
-              ${metadata.channel?.displayName ? `<div class="channel-info">Channel: ${metadata.channel.displayName}</div>` : ''}
+              <div class="account-info">Account: ${updatedAccountName}</div>
+              ${updatedChannelName ? `<div class="channel-info">Channel: ${updatedChannelName}</div>` : ''}
             `;
           }
         }
+      } else {
+        // If no metadata found, ensure original data is shown (optional)
+        // This can be omitted if you want to keep original render
       }
     } catch (error) {
       console.warn(`Could not fetch additional metadata for ${entry.shortUUID}:`, error);
     }
-  });
+  }
 
   // Update header classes to show sort direction
   document.querySelectorAll('th[data-sort]').forEach(header => {
@@ -172,26 +226,24 @@ function renderTable(data, preferredInstances, seenUUIDs) {
   });
 }
 
+
 function setupSortingListeners() {
   document.querySelectorAll('th[data-sort]').forEach(header => {
-    header.addEventListener('click', () => {
+    header.addEventListener('click', async () => {
       const sortType = header.dataset.sort;
       if (sortType === currentSortColumn) {
-        // Toggle direction if clicking the same column
         currentSortDirection = currentSortDirection === 'desc' ? 'asc' : 'desc';
       } else {
-        // New column, set to descending by default
         currentSortColumn = sortType;
         currentSortDirection = 'desc';
       }
 
-      // Re-render with current data
       chrome.storage.local.get([
         'cosine_similarity', 
         'preferredInstances', 
         'peertubeWatchHistory',
         'seenUUIDs'
-      ], (result) => {
+      ], async (result) => {
         const similarityData = result.cosine_similarity || [];
         const preferredInstances = result.preferredInstances || [];
         const watchHistory = result.peertubeWatchHistory ? JSON.parse(result.peertubeWatchHistory) : [];
@@ -204,7 +256,21 @@ function setupSortingListeners() {
             .filter(uuid => uuid)
         ]);
 
-        renderTable(similarityData, preferredInstances, seenUUIDs);
+        // Fetch metadata list from IndexedDB
+        const metadataList = await db.getMetadataList();
+
+        // Augment similarity data with metadata
+        const augmentedData = similarityData.map(entry => {
+          const matchingMetadata = metadataList.find(meta => meta.shortUUID === entry.shortUUID);
+          return {
+            ...entry,
+			title: matchingMetadata?.name|| 'Untitled Video',
+            account: matchingMetadata?.account || { displayName: '' },
+            channel: matchingMetadata?.channel || { displayName: '' }
+          };
+        });
+
+        renderTable(augmentedData, preferredInstances, seenUUIDs);
       });
     });
   });
@@ -218,8 +284,8 @@ function renderInstancesList(instances) {
     const div = document.createElement('div');
     div.className = 'instance-item';
     div.innerHTML = `
-    ${getDomainFromUrl(instance)}
-    <span class="remove-instance" data-instance="${instance}">✖</span>
+      ${getDomainFromUrl(instance)}
+      <span class="remove-instance" data-instance="${instance}">✖</span>
     `;
     instancesList.appendChild(div);
   });
@@ -274,13 +340,13 @@ document.addEventListener('DOMContentLoaded', () => {
     'preferredInstances', 
     'peertubeWatchHistory',
     'seenUUIDs'
-  ], (result) => {
+  ], async (result) => {
     const similarityData = result.cosine_similarity || [];
     const preferredInstances = result.preferredInstances || [];
     const watchHistory = result.peertubeWatchHistory ? JSON.parse(result.peertubeWatchHistory) : [];
     const storedSeenUUIDs = result.seenUUIDs || [];
 
-    // Combine UUIDs from both watch history and stored seen UUIDs
+    // Combine UUIDs from both sources
     const seenUUIDs = new Set([
       ...storedSeenUUIDs,
       ...watchHistory
@@ -288,8 +354,29 @@ document.addEventListener('DOMContentLoaded', () => {
         .filter(uuid => uuid)
     ]);
 
+    // Fetch metadata from IndexedDB
+	const metadataList = await db.getMetadataList();
+
+    // Augment similarity data with account/channel info
+const augmentedData = similarityData.map(entry => {
+  const matchingMetadata = metadataList.find(meta => meta.shortUUID === entry.shortUUID);
+  return {
+    ...entry,
+    title: matchingMetadata?.name|| 'Untitled Video', // Add this line
+    account: {
+      ...matchingMetadata?.account,
+      displayName: matchingMetadata?.account?.displayName || ''
+    },
+    channel: {
+      ...matchingMetadata?.channel,
+      displayName: matchingMetadata?.channel?.displayName || ''
+    }
+  };
+});
+
+    // Render the table with augmented data
     renderInstancesList(preferredInstances);
-    renderTable(similarityData, preferredInstances, seenUUIDs);
+    renderTable(augmentedData, preferredInstances, seenUUIDs);
   });
 
   // Handle adding new instances
@@ -308,25 +395,55 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const updatedInstances = [...instances, instance];
-      chrome.storage.local.set({ preferredInstances: updatedInstances }, () => {
+      chrome.storage.local.set({ preferredInstances: updatedInstances }, async () => {
         chrome.storage.local.get(['cosine_similarity', 'peertubeWatchHistory', 'seenUUIDs'], (result) => {
           const data = result.cosine_similarity || [];
           const watchHistory = result.peertubeWatchHistory ? JSON.parse(result.peertubeWatchHistory) : [];
           const storedSeenUUIDs = result.seenUUIDs || [];
-
+          
           const seenUUIDs = new Set([
             ...storedSeenUUIDs,
             ...watchHistory
               .map(entry => extractUUIDFromURL(entry.url))
               .filter(uuid => uuid)
           ]);
-
-          input.value = '';
-          renderInstancesList(updatedInstances);
-          renderTable(data, updatedInstances, seenUUIDs);
-          alert("✅ Instance added successfully!");
+          
+          // Re-fetch metadata to ensure up-to-date info
+          getMetadataList().then(metadataList => {
+            const augmentedData = data.map(entry => {
+              const meta = metadataList.find(m => m.shortUUID === entry.shortUUID);
+              return {
+                ...entry,
+                account: meta?.account || {},
+                channel: meta?.channel || {}
+              };
+            });
+            
+            input.value = '';
+            renderInstancesList(updatedInstances);
+            renderTable(augmentedData, updatedInstances, seenUUIDs);
+            alert("✅ Instance added successfully!");
+          });
         });
       });
     });
   });
+  document.addEventListener('click', async (event) => {
+  const target = event.target;
+  if (target.classList.contains('instance-link')) {
+    event.preventDefault();
+    const url = target.href;
+
+    try {
+      const response = await fetch(url, { method: 'HEAD' });
+      if (response.ok) {
+        window.open(url, '_blank');
+      } else {
+        alert('The link is not available (404).');
+      }
+    } catch (error) {
+      alert('Error checking the link availability.');
+    }
+  }
+});
 });

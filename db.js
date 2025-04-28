@@ -1,11 +1,10 @@
 // db.js
 
 const DB_NAME = 'peertubeDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented version to trigger schema upgrade
 const METADATA_STORE = 'metadataList';
 
-// Initialize the database
-function initDB() {
+async function initDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -21,9 +20,19 @@ function initDB() {
 
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
+      
+      // Create metadata store if it doesn't exist
       if (!db.objectStoreNames.contains(METADATA_STORE)) {
-        db.createObjectStore(METADATA_STORE, { keyPath: 'shortUUID' });
-        console.log("📦 Created metadataList store");
+        const store = db.createObjectStore(METADATA_STORE, { keyPath: 'shortUUID' });
+        
+        // Add index for faster lookups by shortUUID
+        store.createIndex(
+          'shortUUIDIndex', 
+          'shortUUID', 
+          { unique: true } // Matches the keyPath uniqueness
+        );
+        
+        console.log("📦 Created metadataList store with shortUUID index");
       }
     };
   });
@@ -121,7 +130,7 @@ async function deleteMetadata(shortUUID) {
 window.db = {
   initDB,
   saveMetadataList,
-  getMetadataList,
+  getMetadataList,  // Ensure this is included
   updateMetadata,
   deleteMetadata
 };
