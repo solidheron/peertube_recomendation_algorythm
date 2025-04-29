@@ -107,10 +107,10 @@ async function renderTable(data, preferredInstances, seenUUIDs) {
   const processedData = [...data].map(entry => {
     const alreadySeen = seenUUIDs.has(entry.shortUUID);
     const adjustedTimeSimilarity = alreadySeen ? 
-      entry.tokens.time_engagement_similarity * 0.5 : 
+      entry.tokens.time_engagement_similarity * 0.4 : 
       entry.tokens.time_engagement_similarity;
     const adjustedLikeSimilarity = alreadySeen ? 
-      entry.tokens.like_engagement_similarity * 0.5 : 
+      entry.tokens.like_engagement_similarity * 0.4 : 
       entry.tokens.like_engagement_similarity;
 
     return {
@@ -140,13 +140,13 @@ async function renderTable(data, preferredInstances, seenUUIDs) {
   for (const entry of sortedData) {
     const channelName = entry.channel?.displayName || entry.shortUUID;
     const currentCount = channelCount.get(channelName) || 0;
-    if (currentCount < 5) {
+    if (currentCount < 2) {
       filteredData.push(entry);
       channelCount.set(channelName, currentCount + 1);
     }
   }
 
-  const limitedData = filteredData.slice(0, 500);
+  const limitedData = filteredData.slice(0, 750);
 
   // Use for...of to await async calls properly
   for (const entry of limitedData) {
