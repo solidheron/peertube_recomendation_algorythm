@@ -5,6 +5,7 @@ const instances = [
   'https://video.blender.org',
   'https://peertube.wtf',
   'https://tilvids.com',
+  'https://peertube.tangentfox.com',
   'https://video.hardlimit.com'
 ];
 
@@ -264,6 +265,21 @@ function cleanMetadata(metadata) {
 
   return cleaned;
 }
+async function getMetadataList() {
+  try {
+    const db = await openDB();
+    const tx = db.transaction("metadataList", "readonly");
+    const store = tx.objectStore("metadataList");
+    const request = store.getAll();
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    throw new Error(`Failed to get metadata list: ${error.message}`);
+  }
+}
+
 
 function processMetadataList(metadataList) {
   // Remove duplicates based on shortUUID
@@ -308,10 +324,55 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "saveMetadata") {
+    const metadata = message.metadata;
+    if (!metadata || !metadata.shortUUID) {
+      return sendResponse({ success: false, error: "Invalid metadata format" });
+    }
+    saveMetadataToDB(metadata)
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => {
+        sendResponse({ success: false, error: error.message });
+      });
+    return true;
+  }
+});
+
+async function saveMetadataToDB(metadata) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction("metadataList", "readwrite");
+    const store = tx.objectStore("metadataList");
+    await store.put(metadata); // ✅ No second argument
+    await tx.done;
+    console.log("Metadata saved to DB:", metadata.shortUUID);
+    return true;
+  } catch (error) {
+    throw new Error(`Failed to save metadata: ${error.message}`);
+  }
+}
+
+async function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("peertubeDB", 2); // Changed to version 2
+    request.onerror = (event) => reject(event.target.error);
+    request.onsuccess = (event) => resolve(event.target.result);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains("metadataList")) {
+        db.createObjectStore("metadataList", { keyPath: "shortUUID" });
+      }
+      // Add other schema changes here if needed for version 2
+    };
+  });
+}
+
 // Allow popup or content script to trigger fetch manually
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "manualFetch") {
     console.log("📦 Manual metadata fetch triggered");
     fetchVideoUUIDs();
   }
+  
 });

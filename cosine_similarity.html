@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>PeerTube Recommendations</title>
+  <title>PeerTube Recommendations</title>  
   <style>
     body { 
       font-family: sans-serif; 
@@ -88,11 +88,58 @@
     tr.seen {
       opacity: 0.6;
     }
+	.popup-button {
+	  margin: 8px;
+	  padding: 6px 12px;
+	  background: #4CAF50;
+	  color: white;
+	  border: none;
+	  border-radius: 4px;
+	  cursor: pointer;
+	}
+	.control-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .label-text {
+      font-weight: bold;
+    }
+
+    .popup-button {
+      padding: 6px 12px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+	.options-menu {
+	  padding: 8px 12px;
+	  font-size: 14px;
+	  border: 1px solid #ccc;
+	  border-radius: 4px;
+	  background: white;
+	  cursor: pointer;
+	  margin: 5px;
+	}
   </style>
 </head>
 <body>
-  <h1>Video Recommendations</h1>
-
+ 
+	<div id="popup-content">
+    <div class="control-group">
+      <span class="label-text">Video Recommendations</span>
+      <select id="nsfw-toggle" class="options-menu">
+	  <option disabled selected>Options</option>
+	  <option value="all">Show All Content</option>
+	  <option value="sfw">Hide NSFW Content</option>
+	  <option value="only">Show Only NSFW Content</option>
+	</select>
+	</div>
+	</div>
   <div class="instance-management">
     <div>
       <label for="instanceInput">Add Preferred Instance:</label>

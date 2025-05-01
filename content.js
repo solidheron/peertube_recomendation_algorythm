@@ -14,6 +14,7 @@ const knownInstances = [
   'https://peertube.mastodon.host',
   'https://video.blender.org',
   'https://tilvids.com',
+  'https://peertube.tangentfox.com',
   'https://video.hardlimit.com'
   // add more as needed
 ];
@@ -142,89 +143,77 @@ function fetchVideoInfoAndUpdateMetadata(shortUUID) {
   });
 }
 
-function cosineSimilarity(userVec, videoVec) {
-    let dot = 0, userMag = 0, videoMag = 0;
-
-    for (const token in userVec) {
-        const userVal = userVec[token];
-        const videoVal = videoVec[token] || 0;
-        dot += userVal * videoVal;
-        userMag += userVal * userVal;
-    }
-
-    const videoLen = Object.keys(videoVec).length;
-    videoMag = Math.sqrt(videoLen); // since all token weights = 1
-
-    userMag = Math.sqrt(userMag);
-    if (userMag === 0 || videoMag === 0) return 0;
-
-    return dot / (userMag * videoMag);
-}
-
-
-
 
 async function createUserRecommendationVector(peertubeWatchHistory) {
-  console.log("Creating user recommendation vector from watch history...");
-  
   try {
-    // Get metadata from background script
+    // Fetch existing metadataList from background script
     const response = await new Promise((resolve) => {
       chrome.runtime.sendMessage(
         { action: "getMetadataList" },
-        (response) => {
-          console.log("Received metadata response");
-          resolve(response);
-        }
+        (response) => resolve(response)
       );
     });
 
     let metadataList = response?.metadataList || [];
+    if (!Array.isArray(metadataList)) {
+      metadataList = [];
+      console.warn("Invalid metadataList format. Using empty array.");
+    }
     console.log(`Retrieved ${metadataList.length} metadata items from DB`);
-    
+
     // Fetch missing metadata
     const fetchedMetadata = [];
-    
+
     for (const watchEntry of peertubeWatchHistory) {
       if (!watchEntry.url) continue;
-      
+
       const shortUUID = extractShortUUIDFromURL(watchEntry.url);
       if (!shortUUID) continue;
-      
-      // Check if metadata exists in the list
-      if (!metadataList.some(item => item.shortUUID === shortUUID)) {        
-        const metadata = await fetchMissingMetadata(shortUUID, watchEntry);
-        if (metadata) {
-          fetchedMetadata.push(metadata);
-        }
+
+      // Check if metadata already exists in metadataList
+      const existingMetadata = metadataList.find(
+        (item) => item.shortUUID === shortUUID
+      );
+      if (existingMetadata) {
+        //console.log(`Metadata for ${shortUUID} already exists. Skipping.`);
+        continue; // Skip if already present
+      }
+
+      // Fetch missing metadata
+      const metadata = await fetchMissingMetadata(shortUUID, watchEntry);
+      if (metadata) {
+        fetchedMetadata.push(metadata);
+      } else {
+        console.error(`Failed to fetch metadata for ${shortUUID}`);
       }
     }
-    
+
+    // Merge fetched metadata into metadataList
     if (fetchedMetadata.length > 0) {
       console.log(`Fetched ${fetchedMetadata.length} new metadata items`);
-      // Add fetched metadata to the list
       metadataList = [...metadataList, ...fetchedMetadata];
     }
-    
+
     // Initialize vectors for accumulating engagement
     const totalTokens = {
       time_engagement: {},
-      like_engagement: {}
+      like_engagement: {},
     };
 
     // Process each watched video
     let processedCount = 0;
-    
+
     for (const watchEntry of peertubeWatchHistory) {
       if (!watchEntry.url) continue;
-      
+
       const shortUUID = extractShortUUIDFromURL(watchEntry.url);
       if (!shortUUID) continue;
-      
-      const metadata = metadataList.find(item => item.shortUUID === shortUUID);
-      
+
+      const metadata = metadataList.find(
+        (item) => item.shortUUID === shortUUID
+      );
       if (!metadata) {
-        console.warn(`⚠️ Still no metadata for ${shortUUID}`);
+        console.warn(`⚠️ No metadata found for ${shortUUID}`);
         continue;
       }
 
@@ -239,22 +228,20 @@ async function createUserRecommendationVector(peertubeWatchHistory) {
       if (watchEntry.liked) likeValue = 1;
       else if (watchEntry.disliked) likeValue = -1;
 
-      console.log(`Processing ${shortUUID}: watchTime=${overlapWatchTime}, likeValue=${likeValue}, tokens=${tokens.length}`);
-
       if (overlapWatchTime > 0 || likeValue !== 0) {
-        tokens.forEach(token => {
-          if (typeof token === 'string' && token.trim()) {
+        tokens.forEach((token) => {
+          if (typeof token === "string" && token.trim()) {
             const cleanToken = token.trim();
 
             // Add time engagement
             if (overlapWatchTime > 0) {
-              totalTokens.time_engagement[cleanToken] = 
+              totalTokens.time_engagement[cleanToken] =
                 (totalTokens.time_engagement[cleanToken] || 0) + overlapWatchTime;
             }
 
             // Add like engagement
             if (likeValue !== 0) {
-              totalTokens.like_engagement[cleanToken] = 
+              totalTokens.like_engagement[cleanToken] =
                 (totalTokens.like_engagement[cleanToken] || 0) + likeValue;
             }
           }
@@ -264,27 +251,37 @@ async function createUserRecommendationVector(peertubeWatchHistory) {
     }
 
     console.log(`Processed ${processedCount} videos with engagement`);
-    console.log("Time engagement tokens:", Object.keys(totalTokens.time_engagement).length);
-    console.log("Like engagement tokens:", Object.keys(totalTokens.like_engagement).length);
+    console.log(
+      "Time engagement tokens:",
+      Object.keys(totalTokens.time_engagement).length
+    );
+    console.log(
+      "Like engagement tokens:",
+      Object.keys(totalTokens.like_engagement).length
+    );
 
     // Create the final vector
-    const enhancedVector = [{
-      total: {
-        time_engagement: totalTokens.time_engagement,
-        like_engagement: totalTokens.like_engagement
-      }
-    }];
+    const enhancedVector = [
+      {
+        total: {
+          time_engagement: totalTokens.time_engagement,
+          like_engagement: totalTokens.like_engagement,
+        },
+      },
+    ];
 
     return enhancedVector;
 
   } catch (error) {
     console.error("Error in createUserRecommendationVector:", error);
-    return [{
-      total: {
-        time_engagement: {},
-        like_engagement: {}
-      }
-    }];
+    return [
+      {
+        total: {
+          time_engagement: {},
+          like_engagement: {},
+        },
+      },
+    ];
   }
 }
 
@@ -571,7 +568,7 @@ function stripLinks(text) {
 
 async function fetchMissingMetadata(shortUUID, watchEntry = null) {
   console.log(`🔍 Fetching missing metadata for ${shortUUID}...`);
-  
+
   // Try to determine the source instance from the watch entry URL
   let sourceInstance = null;
   if (watchEntry && watchEntry.url) {
@@ -583,7 +580,7 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
       console.warn(`Could not extract instance from URL: ${watchEntry.url}`);
     }
   }
-  
+
   // List of instances to try
   const instances = [
     sourceInstance, // Try the source instance first if available
@@ -592,7 +589,7 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
     'https://tilvids.com',
     'https://video.hardlimit.com'
   ].filter(Boolean); // Remove null entries
-  
+
   for (const instance of instances) {
     try {
       console.log(`Trying ${instance} for ${shortUUID}...`);
@@ -605,17 +602,27 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
         try {
           // Process metadata
           const metadata = cleanMetadata(data);
+          if (!metadata) {
+            console.error("Invalid metadata after processing:", data);
+            continue; // Skip invalid metadata
+          }
           metadata.shortUUID = shortUUID;
           metadata.sourceInstance = instance;
           
           // Save to database via background script
-          await new Promise(resolve => {
+          await new Promise((resolve, reject) => {
             chrome.runtime.sendMessage(
               { 
                 action: "saveMetadata", 
                 metadata: metadata 
               },
-              resolve
+              (response) => {
+                if (response?.success) {
+                  resolve();
+                } else {
+                  reject(new Error(response?.error || "Save failed"));
+                }
+              }
             );
           });
           
@@ -629,7 +636,7 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
       console.warn(`Error fetching from ${instance} for ${shortUUID}:`, error);
     }
   }
-  
+
   // If all fails, create a minimal metadata entry
   console.warn(`⚠️ Could not fetch metadata for ${shortUUID}, creating minimal entry`);
   
@@ -646,17 +653,27 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
   };
   
   // Save minimal metadata
-  await new Promise(resolve => {
-    chrome.runtime.sendMessage(
-      { 
-        action: "saveMetadata", 
-        metadata: minimalMetadata 
-      },
-      resolve
-    );
-  });
-  
-  return minimalMetadata;
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { 
+          action: "saveMetadata", 
+          metadata: minimalMetadata 
+        },
+        (response) => {
+          if (response?.success) {
+            resolve();
+          } else {
+            reject(new Error(response?.error || "Save failed"));
+          }
+        }
+      );
+    });
+    return minimalMetadata;
+  } catch (error) {
+    console.error("Failed to save minimal metadata:", error);
+    return null; // Return null if even minimal save fails
+  }
 }
 
 // Function to store enhanced user recommendation vector
@@ -677,149 +694,128 @@ function storeUserRecommendationVector() {
 }
 
 async function computeAndStoreCosineSimilarity() {
-  console.group("📊 Computing cosine similarity");
-  
   try {
-    // Get user recommendation vector
-    const userVecResult = await new Promise(resolve => 
+    console.group("📊 Computing cosine similarity");
+
+    // 1. Load user vector
+    const userResult = await new Promise(resolve =>
       chrome.storage.local.get(['userRecommendationVector'], resolve)
     );
-    
-    let userVecRaw = userVecResult.userRecommendationVector;
-    if (typeof userVecRaw === "string") userVecRaw = JSON.parse(userVecRaw);
-    
-    console.log("User vector:", userVecRaw);
-    
-    if (!userVecRaw || !Array.isArray(userVecRaw) || userVecRaw.length === 0) {
-      console.warn("⚠️ Empty or invalid user vector");
+
+    let userVector = userResult.userRecommendationVector;
+    if (typeof userVector === 'string') userVector = JSON.parse(userVector);
+
+    if (!Array.isArray(userVector) || userVector.length === 0) {
+      console.warn("⚠️ Empty user vector");
       console.groupEnd();
       return;
     }
-    
-    // Extract engagement vectors
-    const totalEntry = userVecRaw.find(e => e.total) || { total: {} };
-    const timeEngagementVector = totalEntry.total.time_engagement || {};
-    const likeEngagementVector = totalEntry.total.like_engagement || {};
-    
-    console.log("Time engagement tokens:", Object.keys(timeEngagementVector).length);
-    console.log("Like engagement tokens:", Object.keys(likeEngagementVector).length);
-    
-    // Get metadata from background
-    const response = await new Promise(resolve => {
-      chrome.runtime.sendMessage(
-        { action: "getMetadataList" },
-        response => resolve(response || {})
-      );
-    });
-    
-    // Ensure metadataList is an array
-    const metadataList = Array.isArray(response.metadataList) 
-      ? response.metadataList 
-      : [];
-    
-    console.log(`Processing ${metadataList.length} videos for similarity`);
-    
+
+    const totalEntry = userVector.find(e => e.total);
+    const timeVec = totalEntry?.total?.time_engagement || {};
+    const LikeVec = totalEntry?.total?.like_engagement || {};
+
+    if (Object.keys(timeVec).length === 0 && Object.keys(LikeVec).length === 0) {
+      console.warn("⚠️ Both time and like engagement vectors are empty");
+      console.groupEnd();
+      return;
+    }
+
+    // 2. Precompute norms
+    const userTimeNorm = Math.sqrt(
+      Object.values(timeVec).reduce((sum, v) => sum + v * v, 0)
+    );
+    const userLikeNorm = Math.sqrt(
+      Object.values(LikeVec).reduce((sum, v) => sum + v * v, 0)
+    );
+
+    // 3. Load video metadata
+    const metaResult = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: "getMetadataList" }, resolve)
+    );
+
+    const metadataList = Array.isArray(metaResult?.metadataList) ? metaResult.metadataList : [];
     if (metadataList.length === 0) {
-      console.warn("⚠️ Empty metadata list");
+      console.warn("⚠️ No metadata found");
       console.groupEnd();
       return;
     }
-    
-    // Calculate similarity for each video
+
+    const timeTokens = Object.keys(timeVec);
+    const likeTokens = Object.keys(LikeVec);
     const results = [];
-    
-    for (const video of metadataList) {
-      // Skip invalid entries
-      if (!video || !video.shortUUID) continue;
-      
-      // Get video tokens
-      const tokens = video?.Video_description_vector?.recommended_standard?.tokens;
-      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
-        console.log(`Skipping ${video.shortUUID}: no valid tokens`);
+
+    // 4. Loop through videos in chunks
+    for (let i = 0; i < metadataList.length; i++) {
+      const video = metadataList[i];
+      if (!video?.shortUUID || !Array.isArray(video?.Video_description_vector?.recommended_standard?.tokens)) {
         continue;
       }
-      
-      // Create video vector (using binary representation - token presence)
-      const videoVector = {};
-      for (const token of tokens) {
-        if (typeof token === 'string' && token.trim()) {
-          videoVector[token.trim()] = 1;
+
+      // 5. Reuse or build binary vector + norm
+      if (!video._vector || !video._norm) {
+        const vector = {};
+        const tokens = video.Video_description_vector.recommended_standard.tokens;
+        for (const t of tokens) {
+          if (typeof t === 'string' && t.trim()) {
+            vector[t.trim()] = 1;
+          }
+        }
+        video._vector = vector;
+        video._norm = Math.sqrt(Object.keys(vector).length); // assuming all 1s
+      }
+
+      // 6. Compute dot products
+      let timeDot = 0;
+      for (const token of timeTokens) {
+        if (video._vector[token]) {
+          timeDot += timeVec[token];
         }
       }
-      
-      // Calculate cosine similarity
-      const timeSimilarity = cosineSimilarity(timeEngagementVector, videoVector);
-      const likeSimilarity = cosineSimilarity(likeEngagementVector, videoVector);
-      
-      // Add to results
+
+      let likeDot = 0;
+      for (const token of likeTokens) {
+        if (video._vector[token]) {
+          likeDot += LikeVec[token];
+        }
+      }
+
+      const timeSim = (userTimeNorm && video._norm) ? timeDot / (userTimeNorm * video._norm) : 0;
+      const likeSim = (userLikeNorm && video._norm) ? likeDot / (userLikeNorm * video._norm) : 0;
+
       results.push({
         shortUUID: video.shortUUID,
         url: video.url,
         name: video.name,
         tokens: {
-          time_engagement_similarity: Number(timeSimilarity.toFixed(4)),
-          like_engagement_similarity: Number(likeSimilarity.toFixed(4))
+          time_engagement_similarity: Number(timeSim.toFixed(4)),
+          like_engagement_similarity: Number(likeSim.toFixed(4))
         }
       });
+
+      if (i % 50 === 0) await new Promise(r => setTimeout(r, 0)); // Yield
     }
-    
-    // Sort by time engagement similarity (descending)
-    results.sort((a, b) => 
+
+    // 7. Sort by time engagement similarity (or choose composite sorting later)
+    results.sort((a, b) =>
       b.tokens.time_engagement_similarity - a.tokens.time_engagement_similarity
     );
-    
-    console.log(`Calculated similarity for ${results.length} videos`);
-    console.log("Top result:", results[0]);
-    
-    // Save to storage
-    await new Promise(resolve => 
+
+    // 8. Save results
+    await new Promise(resolve =>
       chrome.storage.local.set({ cosine_similarity: results }, resolve)
     );
-    
-    console.log("✅ Saved similarity results");
+
+    console.log(`✅ Saved ${results.length} similarity results`);
     console.groupEnd();
-    
-  } catch (error) {
-    console.error("Error in computeAndStoreCosineSimilarity:", error);
+
+  } catch (err) {
+    console.error("❌ Error in computeAndStoreCosineSimilarity:", err);
     console.groupEnd();
   }
 }
 
-// Cosine similarity function
-function cosineSimilarity(vecA, vecB) {
-  // Handle empty vectors
-  if (!vecA || !vecB) return 0;
-  
-  const keysA = Object.keys(vecA);
-  const keysB = Object.keys(vecB);
-  
-  if (keysA.length === 0 || keysB.length === 0) return 0;
-  
-  // Calculate dot product
-  let dotProduct = 0;
-  for (const key of keysA) {
-    if (vecB[key]) {
-      dotProduct += vecA[key] * vecB[key];
-    }
-  }
-  
-  // Calculate magnitudes
-  let magnitudeA = 0;
-  for (const key of keysA) {
-    magnitudeA += vecA[key] * vecA[key];
-  }
-  magnitudeA = Math.sqrt(magnitudeA);
-  
-  let magnitudeB = 0;
-  for (const key of keysB) {
-    magnitudeB += vecB[key] * vecB[key];
-  }
-  magnitudeB = Math.sqrt(magnitudeB);
-  
-  // Calculate cosine similarity
-  if (magnitudeA === 0 || magnitudeB === 0) return 0;
-  return dotProduct / (magnitudeA * magnitudeB);
-}
+
 function calculateCosineSimilarity(vecA, vecB, debugId = '') {
   
   
@@ -918,45 +914,26 @@ function validateVector(vector, name) {
 }
 // Helper function to calculate cosine similarity
 function cosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB) return 0;
+  const keysA = Object.keys(vecA);
+  const keysB = Object.keys(vecB);
+  if (keysA.length === 0 || keysB.length === 0) return 0;
 
-  
-  // If either vector is empty, return 0
-  if (Object.keys(vecA).length === 0 || Object.keys(vecB).length === 0) {
-    console.warn("Empty vector in cosine similarity calculation");
-    return 0;
+  let dotProduct = 0, normA = 0, normB = 0;
+  for (const key of keysA) {
+    const valA = vecA[key] || 0;
+    const valB = vecB[key] || 0;
+    dotProduct += valA * valB;
+    normA += valA * valA;
   }
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  // Calculate dot product and norms
-  for (const key in vecA) {
-    const valueA = vecA[key] || 0;
-    const valueB = vecB[key] || 0;
-    
-    dotProduct += valueA * valueB;
-    normA += valueA * valueA;
+  for (const key of keysB) {
+    const valB = vecB[key] || 0;
+    normB += valB * valB;
   }
-
-  for (const key in vecB) {
-    const valueB = vecB[key] || 0;
-    normB += valueB * valueB;
-  }
-
-  // Calculate magnitude
   normA = Math.sqrt(normA);
   normB = Math.sqrt(normB);
-
-  // Avoid division by zero
-  if (normA === 0 || normB === 0) {
-    console.warn("Zero magnitude in cosine similarity calculation");
-    return 0;
-  }
-
-  const similarity = dotProduct / (normA * normB);
-  
-  return similarity;
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (normA * normB);
 }
 
 // Function to trigger the cosine similarity calculation
