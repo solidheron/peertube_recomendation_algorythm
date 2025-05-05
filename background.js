@@ -10,8 +10,8 @@ const instances = [
 ];
 
 const instanceUrl = 'https://dalek.zone';
-const count = 100;
-const maxPages = 3;
+//const count = 15;
+//const maxPages = 2;
 async function processAllInstances() {
   for (const instance of instances) {
     await fetchVideoUUIDs(instance);
@@ -82,6 +82,17 @@ function processMetadataList(metadataList) {
 }
 // Fetch and save video metadata
 async function fetchVideoUUIDs(currentInstance) {
+chrome.storage.local.get('hasRunBefore', (result) => {
+let count, maxPages;
+
+if (result.hasRunBefore) {
+  count = 100;
+  maxPages = 2;
+} else {
+  count = 10;
+  maxPages = 1;
+  chrome.storage.local.set({ hasRunBefore: true });
+}
   currentInstance = currentInstance || instanceUrl;
   const baseUrl = currentInstance.replace(/\/$/, '');
   const allUUIDs = new Set();
@@ -140,6 +151,7 @@ async function fetchVideoUUIDs(currentInstance) {
     
     // Process videos in batches using the more efficient endpoint
     fetchAndSaveMetadata(currentInstance, newUUIDs, processedUUIDs);
+  });
   });
 }
 async function fetchAndSaveMetadata(currentInstance, uuids, processedSet) {
@@ -297,7 +309,7 @@ function processMetadataList(metadataList) {
 // Alarms
 chrome.runtime.onInstalled.addListener(() => {
   console.log("✅ Extension installed. Initializing...");
-  chrome.alarms.create('metadataFetcher', { periodInMinutes: 60 });
+  chrome.alarms.create('metadataFetcher', { periodInMinutes: 3*60 });
   fetchVideoUUIDs(); // optional immediate fetch
 });
 

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Options Menu</title>
+    <style>
+    body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+    }
+    .options-menu {
+        font-size: 16px;
+        padding: 6px;
+        margin-top: 10px;
+        display: block; 
+    }
+</style>
+
+</head>
+<body>
+    <h2>Options Menu</h2>
+
+    <label for="nsfw-toggle">NSFW Filter:</label>
+    <select id="nsfw-toggle" class="options-menu">
+        <option disabled selected>Options</option>
+        <option value="all">Show All Content</option>
+        <option value="sfw">Hide NSFW Content</option>
+        <option value="only">Show Only NSFW Content</option>
+    </select>
+	<button id="downloadHistory" class="options-menu">Download Watch History</button>
+	
+	<button id="uploadHistory" class="options-menu">Upload Watch History</button>
+	<button id="deleteHistory" class="options-menu">Delete Watch History</button>
+	<input type="file" id="uploadFileInput" accept="application/json" style="display: none;" />
+
+	<!-- ... rest of your HTML ... -->
+	<script src="options.js"></script>
+</body>
+</html>

@@ -1,8 +1,3 @@
-// content.js
-
-
-console.log('content.js');
-// Global variables
 let currentSession = null;
 let ctrlPressed = false;
 let shiftPressed = false;
@@ -16,10 +11,7 @@ const knownInstances = [
   'https://tilvids.com',
   'https://peertube.tangentfox.com',
   'https://video.hardlimit.com'
-  // add more as needed
 ];
-
-
 // Initialize variables
 let currentURL = window.location.href; // Initialize currentURL
 let data = null; // Initialize data as null
@@ -46,101 +38,13 @@ function initializeData(currentVideoTime = 0) {
   };
 }
 
-// Function to tokenize and process a single video
-// Add these functions to content.js - they're the same as in background.js
-
 function tokenize(text) {
     const tokens = text
         .toLowerCase()
         .replace(/[^\w\s]/g, "")
         .split(/\s+/)
         .filter(word => word.length > 1);
-    //console.log("Tokens generated:", tokens); // Log the tokens
     return tokens;
-}
-
-
-// Function to tokenize and process a single video
-function processVideoMetadata(video) {
-    let tokens = [];
-    if (video.name) {
-        tokens.push(...tokenize(video.name));
-    }
-
-    if (Array.isArray(video.tags)) {
-        video.tags.forEach(tag => {
-            if (tag && tag.name) {
-                tokens.push(tag.name.toLowerCase());
-            }
-        });
-    }
-
-    if (video.description) {
-        const cleanDesc = stripLinks(video.description);
-        tokens.push(...tokenize(cleanDesc));
-    }
-
-    tokens = [...new Set(tokens)];
-    // Assign tokens to Video_description_vector as a sub-element
-    video.Video_description_vector = {
-        recommended_standard: {
-            "tokens": tokens
-        }
-    };
-    return video;
-}
-
-// Enhanced function to fetch video info and update metadataList
-function fetchVideoInfoAndUpdateMetadata(shortUUID) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.local.get(['metadataList'], async (result) => {
-      const metadataList = result.metadataList || [];
-
-      let videoData = null;
-      let workingInstance = null;
-
-      for (const instance of knownInstances) {
-        const videoApiUrl = `${instance}/api/v1/videos/${shortUUID}`;
-        try {
-          const response = await fetch(videoApiUrl);
-          if (response.ok) {
-            videoData = await response.json();
-            workingInstance = instance;
-            break; // ✅ stop once found
-          } else if (response.status === 404) {
-            console.warn(`🔍 ${shortUUID} not found on ${instance}`);
-          }
-        } catch (err) {
-          console.warn(`⚠️ Fetch error on ${instance} for ${shortUUID}: ${err.message}`);
-        }
-      }
-
-      if (!videoData) {
-        console.warn(`❌ Could not fetch metadata for ${shortUUID} from any known instance`);
-        return resolve(null); // return null but not fatal
-      }
-
-      videoData.shortUUID = shortUUID;
-      videoData.sourceInstance = workingInstance;
-
-      const processedVideo = processVideoMetadata(videoData);
-
-      const existingIndex = metadataList.findIndex(item =>
-        item.uuid === processedVideo.uuid || item.shortUUID === shortUUID
-      );
-
-      if (existingIndex !== -1) {
-        metadataList[existingIndex] = processedVideo;
-      } else {
-        metadataList.push(processedVideo);
-      }
-
-      chrome.storage.local.set({ metadataList }, () => {
-        console.log(`✅ Video ${shortUUID} loaded from ${workingInstance}`);
-        resolve(processedVideo);
-      });
-    });
-  });
 }
 
 
@@ -364,14 +268,7 @@ async function updateUserVector() {
 
 // Helper function to fetch video info and update metadata
 async function fetchVideoInfoAndUpdateMetadata(shortUUID) {
-  const instances = [
-    'https://dalek.zone',
-    'https://peertube.1312.media',
-    'https://peertube.mastodon.host',
-    'https://video.blender.org',
-    'https://tilvids.com',
-    'https://video.hardlimit.com'
-  ];
+  const instances =  knownInstances
 
   for (const instance of instances) {
     try {
@@ -439,7 +336,7 @@ chrome.storage.local.get(['cosine_similarity', 'preferredInstance'], (result) =>
   const preferredInstance = result.preferredInstance || '';
   const tbody = document.querySelector('#results tbody');
 	if (!tbody) {
-	  console.warn('No #results tbody found in the DOM.');
+	  //console.warn('No #results tbody found in the DOM.');
 	  return;
 	}
   tbody.innerHTML = '';
@@ -569,7 +466,6 @@ function stripLinks(text) {
 async function fetchMissingMetadata(shortUUID, watchEntry = null) {
   console.log(`🔍 Fetching missing metadata for ${shortUUID}...`);
 
-  // Try to determine the source instance from the watch entry URL
   let sourceInstance = null;
   if (watchEntry && watchEntry.url) {
     try {
@@ -581,14 +477,10 @@ async function fetchMissingMetadata(shortUUID, watchEntry = null) {
     }
   }
 
-  // List of instances to try
-  const instances = [
-    sourceInstance, // Try the source instance first if available
-    'https://peertube.1312.media',
-    'https://video.blender.org',
-    'https://tilvids.com',
-    'https://video.hardlimit.com'
-  ].filter(Boolean); // Remove null entries
+ const instances = Array.from(new Set([
+  ...(sourceInstance ? [sourceInstance] : []),
+  ...knownInstances
+]));
 
   for (const instance of instances) {
     try {
@@ -815,103 +707,6 @@ async function computeAndStoreCosineSimilarity() {
   }
 }
 
-
-function calculateCosineSimilarity(vecA, vecB, debugId = '') {
-  
-  
-  // Validate vectors
-  if (!vecA || !vecB || typeof vecA !== 'object' || typeof vecB !== 'object') {
-    console.error(`[${debugId}] Invalid vector types:`, {
-      vecAType: typeof vecA,
-      vecBType: typeof vecB
-    });
-    return 0;
-  }
-
-  const keysA = Object.keys(vecA);
-  const keysB = Object.keys(vecB);
-
-  if (keysA.length === 0 || keysB.length === 0) {
-    console.warn(`[${debugId}] Empty vector detected:`, {
-      vecALength: keysA.length,
-      vecBLength: keysB.length
-    });
-    return 0;
-  }
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  // Calculate dot product and norms
-  for (const key of keysA) {
-    const valueA = vecA[key] || 0;
-    const valueB = vecB[key] || 0;
-    
-    dotProduct += valueA * valueB;
-    normA += valueA * valueA;
-  }
-
-  for (const key of keysB) {
-    const valueB = vecB[key] || 0;
-    normB += valueB * valueB;
-  }
-
-  // Calculate magnitudes
-  normA = Math.sqrt(normA);
-  normB = Math.sqrt(normB);
-
-  console.log(`[${debugId}] Calculation details:`, {
-    dotProduct,
-    normA,
-    normB
-  });
-
-  // Check for zero magnitudes
-  if (normA === 0 || normB === 0) {
-    console.warn(`[${debugId}] Zero magnitude detected:`, {
-      normA,
-      normB
-    });
-    return 0;
-  }
-
-  const similarity = dotProduct / (normA * normB);
-  
-  console.log(`[${debugId}] Final similarity:`, similarity);
-  
-  return similarity;
-}
-
-// Add this function to check vector validity
-function validateVector(vector, name) {
-  console.log(`Validating ${name}:`, {
-    type: typeof vector,
-    isObject: typeof vector === 'object',
-    keys: Object.keys(vector),
-    values: Object.values(vector)
-  });
-  
-  if (!vector || typeof vector !== 'object') {
-    console.error(`Invalid ${name}: not an object`);
-    return false;
-  }
-  
-  const keys = Object.keys(vector);
-  if (keys.length === 0) {
-    console.error(`Invalid ${name}: empty object`);
-    return false;
-  }
-  
-  // Check if all values are numbers
-  const hasInvalidValues = Object.values(vector).some(v => typeof v !== 'number');
-  if (hasInvalidValues) {
-    console.error(`Invalid ${name}: contains non-numeric values`);
-    return false;
-  }
-  
-  return true;
-}
 // Helper function to calculate cosine similarity
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB) return 0;
@@ -991,10 +786,6 @@ function processWatchHistory() {
     }
   });
 }
-
-// Call this function when appropriate, e.g., when the user clicks a button
-// or when the extension popup is opened
-
 // Function to load watch history and initialize data for current video
 function loadWatchHistory(callback) {
   chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -1042,7 +833,7 @@ function loadWatchHistory(callback) {
             };
 
             entry.session.segments.push(newSegment);
-            console.warn(`🛠️ Auto-added missing segment for entry ${index} (${entry.url})`);
+            //console.warn(`🛠️ Auto-added missing segment for entry ${index} (${entry.url})`);
             modified = true;
           }
         });
@@ -1141,10 +932,6 @@ setInterval(() => {
     }
 }, 1000);
 
-
-// --- END URL CHANGE DETECTION ---
-
-// Load watch history and then execute main logic
 loadWatchHistory(() => {
     console.log("Initial watch history loaded.");
 });
@@ -1187,10 +974,6 @@ function fetchVideoInfoSync(videoUrl) {
         return null;
     }
 }
-
-// --------------------------------------------------------------------
-// Helper functions for regular videos (segments)
-// Deduplicate segments within a session.
 function deduplicateSegments(segments) {
     return segments.filter((seg, index, self) =>
         index === self.findIndex(s =>
@@ -1302,11 +1085,6 @@ function updateSession(video) {
     return null;
 }
 
-// --------------------------------------------------------------------
-// Save watch data and update chrome.storage.local.
-// For live streams, simply accumulate watched time instead of segments.
-// Function to save watch data and update chrome.storage.local.
-// For live streams, simply accumulate watched time instead of segments.
 function saveWatchData(isFinalSave = false) {
     const startTime = performance.now();
     const now = Date.now();
@@ -1497,7 +1275,7 @@ function startStorageVerification() {
     clearInterval(storageVerificationInterval);
   }
   
-  storageVerificationInterval = setInterval(verifyStorage, 60000); // Check every minute
+  storageVerificationInterval = setInterval(verifyStorage, 10*60000); // Check every minute
   
   // Also clear interval when page unloads
   window.addEventListener('beforeunload', function() {
@@ -1550,80 +1328,31 @@ function main() {
     if (isVideoPage) {
         // First use the API to check if it's a live stream
         checkIfVideoIsLive(window.location.href).then(isLiveFromAPI => {
-            // Then update our data
-            if (data) {
-                const wasLive = data.isLive;
-                data.isLive = isLiveFromAPI;
-                
-                // If this is a new live stream, reset the watched time counter
-                if (data.isLive && !wasLive) {
-                    data.watchedLiveSeconds = 0;
-                    console.log("ðŸ“º New live stream detected via API. Reset watch counter.");
-                }
-                
-                console.log("ðŸ“¹ Video API check complete, isLive:", data.isLive);
-            } else {
-                console.error("Data is null in main function!");
-            }
-            
-            // Fallback to DOM detection only if API says it's not live
-            if (!isLiveFromAPI) {
-                const video = document.querySelector("video");
-                if (video) {
-                    // DOM-based live stream detection as fallback
-                    const liveIndicator = document.querySelector(".live-info") ||
-                        document.querySelector(".video-is-live") ||
-                        document.querySelector("[data-livestream='true']") ||
-                        (document.querySelector(".video-info-first-row") && 
-                         document.querySelector(".video-info-first-row").textContent.includes("LIVE"));
-                         
-                    if (liveIndicator && data) {
-                        console.log("ðŸ“º Live stream detected via DOM fallback");
-                        const wasLive = data.isLive;
-                        data.isLive = true;
-                        
-                        if (!wasLive) {
-                            data.watchedLiveSeconds = 0;
-                            console.log("ðŸ“º New live stream detected via DOM. Reset watch counter.");
-                        }
-                    }
-                }
-            }
-            
-            // Set up interval for tracking after we know if it's live or not
-            setupTracking();
-        }).catch(error => {
-            console.error("Error in live check:", error);
-            // Fall back to DOM detection if API fails
-            fallbackToDOMDetection();
-            setupTracking();
-        });
+		  if (data) {
+			const wasLive = data.isLive;
+			data.isLive = isLiveFromAPI;
+
+			if (data.isLive && !wasLive) {
+			  data.watchedLiveSeconds = 0;
+			  console.log("📺 New live stream detected via API. Reset watch counter.");
+			}
+
+			console.log("📹 Video API check complete, isLive:", data.isLive);
+		  } else {
+			console.error("Data is null in main function!");
+		  }
+
+		  setupTracking();
+		}).catch(error => {
+		  console.error("Error in live check:", error);
+		  // If API fails, assume not live and continue
+		  if (data) data.isLive = false;
+		  setupTracking();
+		});
     }
 }
 
 // Function to fall back to DOM-based detection
-function fallbackToDOMDetection() {
-    const video = document.querySelector("video");
-    if (video && data) {
-        // DOM-based live stream detection as fallback
-        const liveIndicator = document.querySelector(".live-info") ||
-            document.querySelector(".video-is-live") ||
-            document.querySelector("[data-livestream='true']") ||
-            (document.querySelector(".video-info-first-row") && 
-             document.querySelector(".video-info-first-row").textContent.includes("LIVE"));
-             
-        if (liveIndicator) {
-            console.log("ðŸ“º Live stream detected via DOM fallback");
-            const wasLive = data.isLive;
-            data.isLive = true;
-            
-            if (!wasLive) {
-                data.watchedLiveSeconds = 0;
-                console.log("ðŸ“º New live stream detected via DOM. Reset watch counter.");
-            }
-        }
-    }
-}
 
 // Setup the tracking intervals based on whether it's a live stream or not
 // Add this new variable to track when video started playing
@@ -1939,109 +1668,6 @@ setInterval(() => {
 // Call main function
 main();
 
-
-function triggerProcessedUUIDsLoad() {
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.style.display = 'none';
-    fileInput.addEventListener('change', handleProcessedUUIDsFileSelect, false);
-    document.body.appendChild(fileInput);
-    fileInput.click();
-}
-
-function handleProcessedUUIDsFileSelect(evt) {
-    const file = evt.target.files[0];
-    if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const loadedData = JSON.parse(e.target.result);
-                if (Array.isArray(loadedData)) {
-                    chrome.storage.local.set({ processedUUIDs: loadedData }, () => {
-                        console.log("âœ… Processed UUIDs loaded and saved to storage:", loadedData);
-                    });
-                } else {
-                    console.error("âŒ Invalid format in loaded file. Expected an array.");
-                }
-            } catch (err) {
-                console.error("âŒ Failed to parse the loaded file as JSON:", err);
-            }
-        };
-        reader.readAsText(file);
-    }
-}
-
-
-function triggerVideoUUIDsLoad() {
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.style.display = 'none';
-    fileInput.addEventListener('change', handleVideoUUIDsFileSelect, false);
-    document.body.appendChild(fileInput);
-    fileInput.click();
-}
-
-function handleVideoUUIDsFileSelect(evt) {
-    const file = evt.target.files[0];
-    if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const data = JSON.parse(e.target.result);
-                chrome.runtime.sendMessage({
-                    action: "loadVideoUUIDs",
-                    data: data
-                });
-            } catch (e) {
-                console.error("Error parsing JSON:", e);
-            }
-        };
-        reader.readAsText(file);
-    }
-}
-
-function triggerMetadataListLoad() {
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.style.display = 'none';
-    fileInput.addEventListener('change', handleMetadataListFileSelect, false);
-    document.body.appendChild(fileInput);
-    fileInput.click();
-}
-
-function handleMetadataListFileSelect(evt) {
-    const file = evt.target.files[0];
-    if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const data = JSON.parse(e.target.result);
-                chrome.runtime.sendMessage({
-                    action: "loadMetadataList",
-                    data: data
-                });
-            } catch (e) {
-                console.error("Error parsing JSON:", e);
-            }
-        };
-        reader.readAsText(file);
-    }
-}
-
-function runOnce(key, fn) {
-    chrome.storage.local.get([key], (result) => {
-        if (!result[key]) {
-            fn();
-            let obj = {};
-            obj[key] = true;
-            chrome.storage.local.set(obj);
-        } else {
-            console.log(`${key} has already run. Skipping.`);
-        }
-    });
-}
-
-// content.js
 // Function to load and merge data from file
 function loadAndMergeData(callback) {
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {
@@ -2187,8 +1813,3 @@ function saveCurrentSession() {
         });
     });
 }
-
-// Load data for each type, using runOnce to ensure they only run once
-runOnce('mergeProcessedUUIDsHasRun', () => loadAndMergeData("processedUUIDs"));
-runOnce('mergeVideoUUIDsHasRun', () => loadAndMergeData("videoUUIDs"));
-runOnce('mergeMetadataListHasRun', () => loadAndMergeData("metadataList"));
