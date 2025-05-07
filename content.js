@@ -1796,6 +1796,48 @@ function initializeWatchTimeTracking() {
     });
 }
 
+function isPeerTubePage() {
+  const meta = document.querySelector('meta[property="og:platform"]');
+  return meta && meta.content === "PeerTube";
+}
+
+function insertImageButton() {
+  const searchBox = document.querySelector('my-search-typeahead');
+  if (!searchBox || document.querySelector('#my-custom-image-button')) return;
+
+  const img = document.createElement('img');
+  img.id = 'my-custom-image-button';
+  img.src = chrome.runtime.getURL('icons/icon128.png'); // Path to your PNG
+  img.alt = 'Cosine Similarity';
+  img.title = 'Open Cosine Similarity';
+  img.style.width = '32px';
+  img.style.height = '32px';
+  img.style.marginLeft = '10px';
+  img.style.cursor = 'pointer';
+  img.style.verticalAlign = 'middle';
+
+  img.addEventListener('click', () => {
+    const url = chrome.runtime.getURL("cosine_similarity.html");
+    window.open(url, '_blank');
+  });
+
+  searchBox.parentNode.insertBefore(img, searchBox.nextSibling);
+}
+
+if (isPeerTubePage()) {
+  const observer = new MutationObserver(() => {
+    const searchBox = document.querySelector('my-search-typeahead');
+    if (searchBox) {
+      insertImageButton();
+      observer.disconnect();
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+  insertImageButton();
+}
+
+
 function saveCurrentSession() {
     if (!currentSession) return;
     chrome.storage.local.get(['peertubeWatchHistory'], (result) => {

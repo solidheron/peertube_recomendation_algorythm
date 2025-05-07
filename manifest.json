@@ -26,9 +26,7 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*/videos/watch/*",
-        "*://*/w/*",
-        "*://*/v/*"
+        "<all_urls>"
       ],
       "js": [
         "db.js",
@@ -49,6 +47,8 @@
     "background.js",
     "cosine_similarity.js",
 	"videoUUIDs.json",
+	"icons/icon128.png",
+	"cosine_similarity.html",
 	"metadataList.json",
     "processedUUIDs.json"
   ],
