@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "PeerTube Watch History and Recommendations",
+  "name": "PeerTube Picks",
   "version": "1.0",
   "description": "Tracks watch history and provides recommendations for PeerTube videos",
   
